@@ -3,13 +3,16 @@
 #include <LittleFS.h>
 
 #include "app_config.h"
+#include "event_log.h"
 #include "relay_rules.h"
 #include "schedule_manager.h"
+#include "time_safety.h"
 
 namespace
 {
 WebServer *webServer = nullptr;
 RTC_DS3231 *clockRtc = nullptr;
+bool *automationEnabled = nullptr;
 File uploadFile;
 
 const char *DAY_NAMES[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
@@ -22,6 +25,40 @@ String formatDate(const DateTime &now)
         monthIndex = 0;
 
     return String(DAY_NAMES[now.dayOfTheWeek()]) + ", " + String(now.day()) + " " + MONTH_NAMES[monthIndex] + " " + String(now.year());
+}
+
+String escapeHtml(String value)
+{
+    value.replace("&", "&amp;");
+    value.replace("<", "&lt;");
+    value.replace(">", "&gt;");
+    value.replace("\"", "&quot;");
+    value.replace("'", "&#39;");
+    return value;
+}
+
+String relayStateText(int state)
+{
+    return state == RELAY_ON_STATE ? "ON" : "OFF";
+}
+
+bool isAutomationEnabled()
+{
+    return automationEnabled != nullptr && *automationEnabled;
+}
+
+void restoreSingleRelayFromCurrentMode(int relayIndex, const DateTime &now)
+{
+    int currentMinsPastMidnight = (now.hour() * 60) + now.minute();
+    bool canUseAutomation = isAutomationEnabled() && schedule.loaded && isRtcTimeSane(now);
+    applyRelayStateForModeAtTime(relayIndex, currentMinsPastMidnight, schedule.prayerMins, now, canUseAutomation);
+}
+
+void restoreAllRelaysFromCurrentModes(const DateTime &now)
+{
+    int currentMinsPastMidnight = (now.hour() * 60) + now.minute();
+    bool canUseAutomation = isAutomationEnabled() && schedule.loaded && isRtcTimeSane(now);
+    restoreRelayStatesForNow(currentMinsPastMidnight, schedule.prayerMins, now, canUseAutomation);
 }
 
 void saveRulesFromRequest()
@@ -41,7 +78,7 @@ void saveRulesFromRequest()
                 {
                     relayRules[r][ruleCounter].prayerIndex = pIdx;
                     relayRules[r][ruleCounter].offsetMins = webServer->arg(prefix + "_o").toInt();
-                    relayRules[r][ruleCounter].targetState = webServer->arg(prefix + "_s").toInt();
+                    relayRules[r][ruleCounter].targetState = webServer->arg(prefix + "_s").toInt() == RELAY_ON_STATE ? RELAY_ON_STATE : RELAY_OFF_STATE;
                     ruleCounter++;
                 }
             }
@@ -49,6 +86,9 @@ void saveRulesFromRequest()
     }
 
     saveRulesToStorage();
+    DateTime now = clockRtc->now();
+    appendEventLog(now, "Automation rules saved");
+    restoreAllRelaysFromCurrentModes(now);
 }
 
 void sendPageHeader()
@@ -61,20 +101,14 @@ void sendPageHeader()
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Prayer Automation Hub</title>
     <style>
-        *{box-sizing:border-box} body{margin:0;font-family:Arial,sans-serif;background:#eef2f6;color:#111827;padding:14px;text-align:left} .app{max-width:560px;margin:0 auto 24px} h1{font-size:29px;line-height:1.08;margin:22px 4px 18px;text-align:center;letter-spacing:0} h2{font-size:21px;margin:0 0 14px} .card{background:#fff;border:1px solid #e7ecf2;border-radius:18px;box-shadow:0 8px 22px rgba(15,23,42,.08);padding:18px;margin:14px 0}.top-card{text-align:center}.date{font-size:15px;font-weight:700;color:#475569;margin-bottom:10px}.clock{font-size:34px;line-height:1;font-weight:800;color:#2563eb}.note{font-size:13px;color:#64748b;margin:8px 0 14px}.status-line{display:flex;justify-content:center;gap:8px;align-items:center;font-size:14px;font-weight:700}.status-ok{color:#15803d}.status-bad{color:#dc2626}.prayer-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:18px}.prayer-name{font-size:13px;color:#64748b;font-weight:800}.prayer-time{font-size:18px;font-weight:800;margin-top:5px}.upload-row{display:grid;gap:12px}.file-input{width:100%;font-size:15px}.btn{border:0;border-radius:12px;min-height:44px;padding:10px 14px;font-size:15px;font-weight:800;color:#fff;background:#2563eb;cursor:pointer}.btn-secondary{background:#475569}.btn-green{background:#16a34a}.btn-red{background:#e11d48}.btn-light{background:#e2e8f0;color:#0f172a}.relay-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.relay-status{font-size:12px;font-weight:900;border-radius:999px;padding:6px 10px;background:#e2e8f0;color:#475569}.relay-status.on{background:#dcfce7;color:#15803d}.relay-status.off{background:#fee2e2;color:#be123c}.manual-controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}.rules-table,.rules-table tbody{display:block;width:100%}.rule-row{display:grid;grid-template-columns:1fr 86px 1fr 44px;gap:8px;align-items:end;padding:12px 0;border-top:1px solid #eef2f7}.rule-row td{display:block;padding:0}.rule-row select,.rule-row input{width:100%;height:42px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;padding:0 10px;font-size:15px}.offset-wrap{display:flex;align-items:center;gap:6px}.offset-wrap input{min-width:0}.unit{font-size:12px;color:#64748b;font-weight:800}.del-btn{width:42px;height:42px;border:0;border-radius:12px;background:#ef4444;color:#fff;font-size:20px;font-weight:800}.save-card{position:sticky;bottom:10px;z-index:2;padding:12px;background:rgba(255,255,255,.94);backdrop-filter:blur(6px)}@media(min-width:520px){body{padding:22px}h1{font-size:34px}.card{padding:22px}.clock{font-size:38px}.prayer-time{font-size:20px}.rule-row{grid-template-columns:1fr 100px 1fr 48px}}
+        *{box-sizing:border-box} body{margin:0;font-family:Arial,sans-serif;background:#eef2f6;color:#111827;padding:14px;text-align:left} .app{max-width:560px;margin:0 auto 24px} h1{font-size:29px;line-height:1.08;margin:22px 4px 18px;text-align:center;letter-spacing:0} h2{font-size:21px;margin:0 0 14px} .card{background:#fff;border:1px solid #e7ecf2;border-radius:18px;box-shadow:0 8px 22px rgba(15,23,42,.08);padding:18px;margin:14px 0}.top-card{text-align:center}.date{font-size:15px;font-weight:700;color:#475569;margin-bottom:10px}.clock{font-size:34px;line-height:1;font-weight:800;color:#2563eb}.note{font-size:13px;color:#64748b;margin:8px 0 14px}.status-line{display:flex;justify-content:center;gap:8px;align-items:center;font-size:14px;font-weight:700;margin-top:8px}.status-ok{color:#15803d}.status-bad{color:#dc2626}.prayer-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:18px}.prayer-name{font-size:13px;color:#64748b;font-weight:800}.prayer-time{font-size:18px;font-weight:800;margin-top:5px}.upload-row{display:grid;gap:12px}.file-input{width:100%;font-size:15px}.btn{border:0;border-radius:12px;min-height:44px;padding:10px 12px;font-size:14px;font-weight:800;color:#fff;background:#2563eb;cursor:pointer}.btn.active{outline:3px solid rgba(37,99,235,.25)}.btn-secondary{background:#475569}.btn-green{background:#16a34a}.btn-red{background:#e11d48}.btn-light{background:#e2e8f0;color:#0f172a}.relay-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.relay-badges{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.relay-status{font-size:12px;font-weight:900;border-radius:999px;padding:6px 10px;background:#e2e8f0;color:#475569}.relay-status.on{background:#dcfce7;color:#15803d}.relay-status.off{background:#fee2e2;color:#be123c}.manual-controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}.rules-table,.rules-table tbody{display:block;width:100%}.rule-row{display:grid;grid-template-columns:1fr 86px 1fr 44px;gap:8px;align-items:end;padding:12px 0;border-top:1px solid #eef2f7}.rule-row td{display:block;padding:0}.rule-row select,.rule-row input{width:100%;height:42px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;padding:0 10px;font-size:15px}.offset-wrap{display:flex;align-items:center;gap:6px}.offset-wrap input{min-width:0}.unit{font-size:12px;color:#64748b;font-weight:800}.del-btn{width:42px;height:42px;border:0;border-radius:12px;background:#ef4444;color:#fff;font-size:20px;font-weight:800}.log-box{font-family:Consolas,monospace;font-size:12px;line-height:1.45;white-space:pre-wrap;max-height:260px;overflow:auto;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px;color:#334155}.save-card{position:sticky;bottom:10px;z-index:2;padding:12px;background:rgba(255,255,255,.94);backdrop-filter:blur(6px)}@media(min-width:520px){body{padding:22px}h1{font-size:34px}.card{padding:22px}.clock{font-size:38px}.prayer-time{font-size:20px}.rule-row{grid-template-columns:1fr 100px 1fr 48px}}
     </style>
     <script>
-    function updateRelayBadge(relayIdx, state) {
-        var badge = document.getElementById('relayStatus' + relayIdx);
-        if(!badge) return;
-        badge.textContent = state == 0 ? 'ON' : 'OFF';
-        badge.className = 'relay-status ' + (state == 0 ? 'on' : 'off');
-    }
-    function setRelay(relayIdx, state) {
-        fetch('/relay?relay=' + relayIdx + '&state=' + state)
+    function setRelayMode(relayIdx, mode) {
+        fetch('/relay?relay=' + relayIdx + '&mode=' + mode)
             .then(function(resp) {
                 if(!resp.ok) throw new Error('relay');
-                updateRelayBadge(relayIdx, state);
+                location.reload();
             })
             .catch(function() { alert('Relay command failed.'); });
     }
@@ -147,12 +181,17 @@ void sendPageHeader()
 void sendClockCard(const DateTime &now)
 {
     int secondsPastMidnight = (now.hour() * 3600) + (now.minute() * 60) + now.second();
+    bool rtcOk = isRtcTimeSane(now);
+    bool autoOk = isAutomationEnabled() && rtcOk && schedule.loaded;
+
     String clockHtml = "<div class='card top-card'>";
     clockHtml += "<div id='todayDate' class='date'>Today: " + formatDate(now) + "</div>";
     clockHtml += "<div id='liveClock' class='clock'>--:--:--</div>";
     clockHtml += "<script>initLiveClock(" + String(secondsPastMidnight) + ");</script>";
     clockHtml += "<p class='note'>UTC+2 - Standard Winter Time</p>";
+    clockHtml += "<div class='status-line'>RTC <span class='" + String(rtcOk ? "status-ok'>Sane" : "status-bad'>Invalid") + "</span></div>";
     clockHtml += "<div class='status-line'>Calendar <span class='" + String(schedule.loaded ? "status-ok'>Synced" : "status-bad'>Missing file") + "</span></div>";
+    clockHtml += "<div class='status-line'>Automation <span class='" + String(autoOk ? "status-ok'>Enabled" : "status-bad'>Disabled") + "</span></div>";
     webServer->sendContent(clockHtml);
 
     if (schedule.loaded)
@@ -188,13 +227,16 @@ void sendRelayCards()
     for (int r = 0; r < RELAY_COUNT; r++)
     {
         int relayState = getRelayState(r);
-        bool relayOn = relayState == 0;
+        bool relayOn = relayState == RELAY_ON_STATE;
+        RelayMode mode = getRelayMode(r);
         String card = "<div class='card'>";
-        card += "<div class='relay-head'><h2>Relay " + String(r + 1) + "</h2>";
-        card += "<span id='relayStatus" + String(r) + "' class='relay-status " + String(relayOn ? "on'>ON" : "off'>OFF") + "</span></div>";
+        card += "<div class='relay-head'><h2>Relay " + String(r + 1) + "</h2><div class='relay-badges'>";
+        card += "<span class='relay-status'>" + String(relayModeLabel(mode)) + "</span>";
+        card += "<span id='relayStatus" + String(r) + "' class='relay-status " + String(relayOn ? "on'>ON" : "off'>OFF") + "</span></div></div>";
         card += "<div class='manual-controls'>";
-        card += "<button type='button' class='btn btn-green' onclick='setRelay(" + String(r) + ",0)'>Manual ON</button>";
-        card += "<button type='button' class='btn btn-red' onclick='setRelay(" + String(r) + ",1)'>Manual OFF</button>";
+        card += "<button type='button' class='btn btn-light" + String(mode == RELAY_MODE_AUTO ? " active" : "") + "' onclick='setRelayMode(" + String(r) + ",0)'>AUTO</button>";
+        card += "<button type='button' class='btn btn-green" + String(mode == RELAY_MODE_MANUAL_ON ? " active" : "") + "' onclick='setRelayMode(" + String(r) + ",1)'>ON</button>";
+        card += "<button type='button' class='btn btn-red" + String(mode == RELAY_MODE_MANUAL_OFF ? " active" : "") + "' onclick='setRelayMode(" + String(r) + ",2)'>OFF</button>";
         card += "</div>";
         card += "<table class='rules-table' id='ruleTable" + String(r) + "'></table>";
         card += "<button type='button' class='btn btn-secondary' onclick='addRuleRow(" + String(r) + ",0,0,0)'>Add Rule</button>";
@@ -203,6 +245,15 @@ void sendRelayCards()
     }
 
     webServer->sendContent("<div class='card save-card'><input type='submit' name='save_rules' class='btn' value='Save Automation Rules'></div></form>");
+}
+
+void sendEventLogCard()
+{
+    String logText = readEventLog();
+    if (logText.length() == 0)
+        logText = "No events yet.";
+
+    webServer->sendContent("<div class='card'><h2>Event Log</h2><div class='log-box'>" + escapeHtml(logText) + "</div></div>");
 }
 
 void sendSavedRulesScript()
@@ -243,28 +294,56 @@ void handleRoot()
     sendClockCard(now);
     sendUploadForm();
     sendRelayCards();
+    sendEventLogCard();
     sendSavedRulesScript();
 }
 
 void handleRelayControl()
 {
-    if (!webServer->hasArg("relay") || !webServer->hasArg("state"))
+    if (!webServer->hasArg("relay"))
     {
-        webServer->send(400, "text/plain", "Missing relay or state");
+        webServer->send(400, "text/plain", "Missing relay");
         return;
     }
 
     int relayIndex = webServer->arg("relay").toInt();
-    int targetState = webServer->arg("state").toInt() == 0 ? 0 : 1;
-
     if (relayIndex < 0 || relayIndex >= RELAY_COUNT)
     {
         webServer->send(400, "text/plain", "Invalid relay");
         return;
     }
 
-    setRelayState(relayIndex, targetState);
-    webServer->send(200, "text/plain", targetState == 0 ? "ON" : "OFF");
+    RelayMode mode = RELAY_MODE_AUTO;
+    if (webServer->hasArg("mode"))
+    {
+        int rawMode = webServer->arg("mode").toInt();
+        if (rawMode == RELAY_MODE_MANUAL_ON)
+            mode = RELAY_MODE_MANUAL_ON;
+        else if (rawMode == RELAY_MODE_MANUAL_OFF)
+            mode = RELAY_MODE_MANUAL_OFF;
+    }
+    else if (webServer->hasArg("state"))
+    {
+        mode = webServer->arg("state").toInt() == RELAY_ON_STATE ? RELAY_MODE_MANUAL_ON : RELAY_MODE_MANUAL_OFF;
+    }
+    else
+    {
+        webServer->send(400, "text/plain", "Missing mode");
+        return;
+    }
+
+    DateTime now = clockRtc->now();
+    setRelayMode(relayIndex, mode);
+
+    if (mode == RELAY_MODE_MANUAL_ON)
+        setRelayState(relayIndex, RELAY_ON_STATE);
+    else if (mode == RELAY_MODE_MANUAL_OFF)
+        setRelayState(relayIndex, RELAY_OFF_STATE);
+    else
+        restoreSingleRelayFromCurrentMode(relayIndex, now);
+
+    appendEventLog(now, "Relay " + String(relayIndex + 1) + " mode " + String(relayModeLabel(mode)) + "; state " + relayStateText(getRelayState(relayIndex)));
+    webServer->send(200, "text/plain", relayStateText(getRelayState(relayIndex)));
 }
 
 void handleTimeSync()
@@ -282,14 +361,33 @@ void handleTimeSync()
     int minute = webServer->arg("mi").toInt();
     int second = webServer->arg("s").toInt();
 
-    if (year < 2020 || month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59)
+    if (year < RTC_MIN_VALID_YEAR || year > RTC_MAX_VALID_YEAR || month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59)
     {
         webServer->send(400, "text/plain", "Invalid time fields");
         return;
     }
 
-    clockRtc->adjust(DateTime(year, month, day, hour, minute, second));
-    loadTodaySchedule(month, day);
+    DateTime before = clockRtc->now();
+    DateTime synced(year, month, day, hour, minute, second);
+    bool wasEnabled = isAutomationEnabled();
+    uint32_t beforeSec = before.unixtime();
+    uint32_t syncedSec = synced.unixtime();
+    uint32_t deltaSec = beforeSec > syncedSec ? beforeSec - syncedSec : syncedSec - beforeSec;
+
+    clockRtc->adjust(synced);
+
+    bool loaded = loadTodaySchedule(month, day);
+    if (automationEnabled != nullptr)
+        *automationEnabled = isRtcTimeSane(synced) && loaded;
+
+    if (isAutomationEnabled())
+        restoreAllRelaysFromCurrentModes(synced);
+    else
+        restoreRelayStatesForNow((synced.hour() * 60) + synced.minute(), schedule.prayerMins, synced, false);
+
+    if (!wasEnabled || deltaSec > 120)
+        appendEventLog(synced, String("Time synced from browser; automation ") + (isAutomationEnabled() ? "enabled" : "disabled"));
+
     webServer->send(200, "text/plain", "OK");
 }
 
@@ -312,7 +410,11 @@ void handleFileUpload()
         {
             uploadFile.close();
             DateTime now = clockRtc->now();
-            loadTodaySchedule(now.month(), now.day());
+            bool loaded = loadTodaySchedule(now.month(), now.day());
+            if (automationEnabled != nullptr)
+                *automationEnabled = isRtcTimeSane(now) && loaded;
+            appendEventLog(now, String("Schedule CSV uploaded; automation ") + (isAutomationEnabled() ? "enabled" : "disabled"));
+            restoreAllRelaysFromCurrentModes(now);
         }
     }
 }
@@ -324,10 +426,11 @@ void handleUploadSuccess()
 }
 }
 
-void configureWebServer(WebServer &server, RTC_DS3231 &rtc)
+void configureWebServer(WebServer &server, RTC_DS3231 &rtc, bool *automationEnabledFlag)
 {
     webServer = &server;
     clockRtc = &rtc;
+    automationEnabled = automationEnabledFlag;
 
     server.on("/", HTTP_GET, handleRoot);
     server.on("/", HTTP_POST, handleRoot);
@@ -335,3 +438,4 @@ void configureWebServer(WebServer &server, RTC_DS3231 &rtc)
     server.on("/time-sync", HTTP_GET, handleTimeSync);
     server.on("/upload", HTTP_POST, handleUploadSuccess, handleFileUpload);
 }
+
