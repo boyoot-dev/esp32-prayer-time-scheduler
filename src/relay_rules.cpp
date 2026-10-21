@@ -219,11 +219,9 @@ void applyRelayStateForModeAtTime(int relayIndex, int currentMinsPastMidnight, c
     int before = getRelayState(relayIndex);
     int desiredState = RELAY_OFF_STATE;
 
-    if (!automationEnabled)
-    {
-        desiredState = RELAY_OFF_STATE;
-    }
-    else if (relayModes[relayIndex] == RELAY_MODE_MANUAL_ON)
+    // Manual modes don't depend on the clock, so they hold even when automation is
+    // disabled; only AUTO relays fall back to OFF without trusted time and a schedule.
+    if (relayModes[relayIndex] == RELAY_MODE_MANUAL_ON)
     {
         desiredState = RELAY_ON_STATE;
     }
@@ -231,7 +229,7 @@ void applyRelayStateForModeAtTime(int relayIndex, int currentMinsPastMidnight, c
     {
         desiredState = RELAY_OFF_STATE;
     }
-    else
+    else if (automationEnabled)
     {
         desiredState = computeAutoRelayStateAtTime(relayIndex, currentMinsPastMidnight, prayerTimes);
     }

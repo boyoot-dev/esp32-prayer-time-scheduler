@@ -99,12 +99,11 @@ bool initializeRtc()
     return true;
 }
 
-void holdRelaysOff(const DateTime &now)
+// Without trusted time or today's schedule: AUTO relays go OFF, manual modes still apply.
+void holdAutoRelaysOff(const DateTime &now)
 {
-    for (int r = 0; r < RELAY_COUNT; r++)
-        setRelayState(r, RELAY_OFF_STATE);
-
-    appendEventLog(now, "Relay outputs held OFF");
+    restoreRelayStatesForNow(0, schedule.prayerMins, now, false);
+    appendEventLog(now, "AUTO relays held OFF");
 }
 void loadScheduleForDate(const DateTime &now, bool restoreRelays)
 {
@@ -123,7 +122,7 @@ void loadScheduleForDate(const DateTime &now, bool restoreRelays)
     else
     {
         appendEventLog(now, "Schedule missing for today; automation disabled");
-        holdRelaysOff(now);
+        holdAutoRelaysOff(now);
     }
 }
 
@@ -192,7 +191,7 @@ void setup()
     }
     else
     {
-        holdRelaysOff(now);
+        holdAutoRelaysOff(now);
     }
 
     beginNetwork();
@@ -247,7 +246,7 @@ void loop()
         {
             loggedInvalidRtc = true;
             automationEnabled = false;
-            holdRelaysOff(now);
+            holdAutoRelaysOff(now);
         }
         return;
     }

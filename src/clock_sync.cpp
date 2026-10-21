@@ -64,6 +64,6 @@ void applyClockSync(RTC_DS3231 &rtc, bool &automationEnabled, const DateTime &sy
     automationEnabled = isRtcTimeSane(synced) && loaded;
     restoreRelayStatesForNow((synced.hour() * 60) + synced.minute(), schedule.prayerMins, synced, automationEnabled);
 
-    if (!wasEnabled || deltaSec > 120)
+    if (automationEnabled != wasEnabled || deltaSec > 120)
         appendEventLog(synced, String("Time synced from ") + source + "; automation " + (automationEnabled ? "enabled" : "disabled"));
 }
