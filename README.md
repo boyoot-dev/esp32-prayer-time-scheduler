@@ -12,6 +12,7 @@ For a terse reference of the same information, see [PROJECT.md](PROJECT.md). The
 
 - [What it does](#what-it-does)
 - [Hardware](#hardware)
+- [Wiring](#wiring)
 - [Repository layout](#repository-layout)
 - [Getting started](#getting-started)
 - [Configuration](#configuration)
@@ -63,6 +64,39 @@ The schedule never depends on the network or the server. ThingsBoard only mirror
 Active-low means `digitalWrite(pin, LOW)` energizes the relay (ON). Pins and relay count are in [include/app_config.h](include/app_config.h); all other code reads `RELAY_PINS`/`RELAY_COUNT`.
 
 Without a working DS3231 the firmware falls back to the system clock once NTP (or a browser sync) has set it, so automation still runs on a networked board. The RTC status then reads "Not working - using network time", and `rtc_ok` is `false` in ThingsBoard. Until a time source is available, AUTO relays stay OFF; manual modes always work.
+
+## Wiring
+
+### 4-channel relay module (active-low)
+
+| Relay module | ESP32 |
+|---|---|
+| IN1 | GPIO 2 |
+| IN2 | GPIO 4 |
+| IN3 | GPIO 5 |
+| IN4 | GPIO 18 |
+| GND | GND |
+| VCC | 5V (VIN), or 3.3V, see below |
+
+The firmware drives the inputs **LOW = relay ON, HIGH = OFF**, which suits the common opto-isolated 4-channel modules.
+
+### DS3231 RTC
+
+| DS3231 | ESP32 |
+|---|---|
+| VCC | 3.3V |
+| GND | GND |
+| SDA | GPIO 21 |
+| SCL | GPIO 22 |
+
+Fit the coin cell so the RTC keeps time through power cuts.
+
+### Things to watch
+
+- **Relay won't switch fully OFF:** with the module's VCC at 5V, the ESP32's 3.3V HIGH may not fully turn its input off, so a relay stays on or chatters. If the module has a **JD-VCC jumper**, remove it, connect **VCC to 3.3V** and **JD-VCC to 5V**, and keep GND common. The relay coils then run from 5V while the inputs see 3.3V logic.
+- **USB upload fails:** GPIO 2 (Relay 1) is an ESP32 boot-strapping pin. If uploading over USB fails with the relay module connected, disconnect IN1 during the upload. OTA updates are not affected.
+- **Blue LED:** the devkit's onboard LED is also on GPIO 2, so it mirrors Relay 1, inverted: LED lit = Relay 1 OFF.
+- **Loads:** wire each load through the relay's **COM** and **NO** (normally open) terminals, so it is disconnected whenever the relay is OFF, including during boot and the startup delay. Keep mains wiring in a proper enclosure, with a fuse, and within the relay's rated current.
 
 ## Repository layout
 
