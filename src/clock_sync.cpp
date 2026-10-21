@@ -14,12 +14,37 @@ namespace
 {
 volatile bool ntpSyncPending = false;
 volatile bool ntpEverSynced = false;
+bool rtcPresent = false;
+bool ntpFallback = false;
+// Set once NTP or a browser sync has set the system clock since boot.
+volatile bool systemClockTrusted = false;
 
 void onNtpSync(struct timeval *)
 {
     ntpEverSynced = true;
+    systemClockTrusted = true;
     ntpSyncPending = true;
 }
+}
+
+void setRtcPresent(bool present)
+{
+    rtcPresent = present;
+}
+
+DateTime currentTime(RTC_DS3231 &rtc)
+{
+    // Skip the I2C read when there is no RTC: each failed read logs an error.
+    DateTime rtcNow = rtcPresent ? rtc.now() : DateTime(static_cast<uint32_t>(0));
+    ntpFallback = !isRtcTimeSane(rtcNow) && systemClockTrusted;
+    if (ntpFallback)
+        return DateTime(static_cast<uint32_t>(time(nullptr) + TIME_UTC_OFFSET_SECONDS));
+    return rtcNow;
+}
+
+bool usingNtpFallback()
+{
+    return ntpFallback;
 }
 
 void setSystemClockFromRtc(const DateTime &rtcNow)
@@ -51,14 +76,16 @@ bool takeNtpSync(DateTime &localStandardNow)
 
 void applyClockSync(RTC_DS3231 &rtc, bool &automationEnabled, const DateTime &synced, const char *source)
 {
-    DateTime before = rtc.now();
+    DateTime before = currentTime(rtc);
     bool wasEnabled = automationEnabled;
     uint32_t beforeSec = before.unixtime();
     uint32_t syncedSec = synced.unixtime();
     uint32_t deltaSec = beforeSec > syncedSec ? beforeSec - syncedSec : syncedSec - beforeSec;
 
-    rtc.adjust(synced);
+    if (rtcPresent)
+        rtc.adjust(synced);
     setSystemClockFromRtc(synced);
+    systemClockTrusted = true;
 
     bool loaded = loadTodaySchedule(synced.month(), synced.day());
     automationEnabled = isRtcTimeSane(synced) && loaded;

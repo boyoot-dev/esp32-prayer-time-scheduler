@@ -83,7 +83,7 @@ void saveRulesFromRequest()
     }
 
     saveRulesToStorage();
-    DateTime now = clockRtc->now();
+    DateTime now = currentTime(*clockRtc);
     appendEventLog(now, "Automation rules saved (web)");
     restoreAllRelaysFromCurrentModes(now);
     reportRelayRules();
@@ -99,7 +99,7 @@ void sendPageHeader()
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Prayer Automation Hub</title>
     <style>
-        *{box-sizing:border-box} body{margin:0;font-family:Arial,sans-serif;background:#eef2f6;color:#111827;padding:14px;text-align:left} .app{max-width:560px;margin:0 auto 24px} h1{font-size:29px;line-height:1.08;margin:22px 4px 18px;text-align:center;letter-spacing:0} h2{font-size:21px;margin:0 0 14px} .card{background:#fff;border:1px solid #e7ecf2;border-radius:18px;box-shadow:0 8px 22px rgba(15,23,42,.08);padding:18px;margin:14px 0}.top-card{text-align:center}.date{font-size:15px;font-weight:700;color:#475569;margin-bottom:10px}.clock{font-size:34px;line-height:1;font-weight:800;color:#2563eb}.note{font-size:13px;color:#64748b;margin:8px 0 14px}.status-line{display:flex;justify-content:center;gap:8px;align-items:center;font-size:14px;font-weight:700;margin-top:8px}.status-ok{color:#15803d}.status-bad{color:#dc2626}.prayer-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:18px}.prayer-name{font-size:13px;color:#64748b;font-weight:800}.prayer-time{font-size:18px;font-weight:800;margin-top:5px}.upload-row{display:grid;gap:12px}.file-input{width:100%;font-size:15px}.btn{border:0;border-radius:12px;min-height:44px;padding:10px 12px;font-size:14px;font-weight:800;color:#fff;background:#2563eb;cursor:pointer}.btn.active{outline:3px solid rgba(37,99,235,.25)}.btn-secondary{background:#475569}.btn-green{background:#16a34a}.btn-red{background:#e11d48}.btn-light{background:#e2e8f0;color:#0f172a}.relay-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.relay-badges{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.relay-status{font-size:12px;font-weight:900;border-radius:999px;padding:6px 10px;background:#e2e8f0;color:#475569}.relay-status.on{background:#dcfce7;color:#15803d}.relay-status.off{background:#fee2e2;color:#be123c}.manual-controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}.rules-table,.rules-table tbody{display:block;width:100%}.rule-row{display:grid;grid-template-columns:1fr 86px 1fr 44px;gap:8px;align-items:end;padding:12px 0;border-top:1px solid #eef2f7}.rule-row td{display:block;padding:0}.rule-row select,.rule-row input{width:100%;height:42px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;padding:0 10px;font-size:15px}.offset-wrap{display:flex;align-items:center;gap:6px}.offset-wrap input{min-width:0}.unit{font-size:12px;color:#64748b;font-weight:800}.del-btn{width:42px;height:42px;border:0;border-radius:12px;background:#ef4444;color:#fff;font-size:20px;font-weight:800}.log-box{font-family:Consolas,monospace;font-size:12px;line-height:1.45;white-space:pre-wrap;max-height:260px;overflow:auto;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px;color:#334155}.field{display:grid;gap:4px;font-size:13px;font-weight:800;color:#475569}.field input{height:42px;border:1px solid #cbd5e1;border-radius:10px;padding:0 10px;font-size:15px}.save-card{position:sticky;bottom:10px;z-index:2;padding:12px;background:rgba(255,255,255,.94);backdrop-filter:blur(6px)}@media(min-width:520px){body{padding:22px}h1{font-size:34px}.card{padding:22px}.clock{font-size:38px}.prayer-time{font-size:20px}.rule-row{grid-template-columns:1fr 100px 1fr 48px}}
+        *{box-sizing:border-box} body{margin:0;font-family:Arial,sans-serif;background:#eef2f6;color:#111827;padding:14px;text-align:left} .app{max-width:560px;margin:0 auto 24px} h1{font-size:29px;line-height:1.08;margin:22px 4px 18px;text-align:center;letter-spacing:0} h2{font-size:21px;margin:0 0 14px} .card{background:#fff;border:1px solid #e7ecf2;border-radius:18px;box-shadow:0 8px 22px rgba(15,23,42,.08);padding:18px;margin:14px 0}.top-card{text-align:center}.date{font-size:15px;font-weight:700;color:#475569;margin-bottom:10px}.clock{font-size:34px;line-height:1;font-weight:800;color:#2563eb}.note{font-size:13px;color:#64748b;margin:8px 0 14px}.status-line{display:flex;justify-content:center;gap:8px;align-items:center;font-size:14px;font-weight:700;margin-top:8px}.status-ok{color:#15803d}.status-bad{color:#dc2626}.prayer-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:18px}.prayer-name{font-size:13px;color:#64748b;font-weight:800}.prayer-time{font-size:18px;font-weight:800;margin-top:5px}.upload-row{display:grid;gap:12px}.file-input{width:100%;font-size:15px}.btn{border:0;border-radius:12px;min-height:44px;padding:10px 12px;font-size:14px;font-weight:800;color:#fff;background:#2563eb;cursor:pointer}.btn.active{outline:3px solid rgba(37,99,235,.25)}.btn-secondary{background:#475569}.btn-green{background:#16a34a}.btn-red{background:#e11d48}.btn-light{background:#e2e8f0;color:#0f172a}.relay-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.relay-badges{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.relay-status{font-size:12px;font-weight:900;border-radius:999px;padding:6px 10px;background:#e2e8f0;color:#475569}.relay-status.on{background:#dcfce7;color:#15803d}.relay-status.off{background:#fee2e2;color:#be123c}.manual-controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}.rules-table,.rules-table tbody{display:block;width:100%}.rule-row{display:grid;grid-template-columns:1fr 86px 1fr 44px;gap:8px;align-items:end;padding:12px 0;border-top:1px solid #eef2f7}.rule-row td{display:block;padding:0}.rule-row select,.rule-row input{width:100%;height:42px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;padding:0 10px;font-size:15px}.offset-wrap{display:flex;align-items:center;gap:6px}.offset-wrap input{min-width:0}.unit{font-size:12px;color:#64748b;font-weight:800}.del-btn{width:42px;height:42px;border:0;border-radius:12px;background:#ef4444;color:#fff;font-size:20px;font-weight:800}.log-box{font-family:Consolas,monospace;font-size:12px;line-height:1.45;white-space:pre-wrap;max-height:260px;overflow:auto;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px;color:#334155}.field{display:grid;gap:4px;font-size:13px;font-weight:800;color:#475569}.field input{height:42px;border:1px solid #cbd5e1;border-radius:10px;padding:0 10px;font-size:15px}.rules-notice{margin:0 0 12px;padding:10px 12px;border-radius:10px;background:#fef3c7;color:#92400e;font-size:13px;font-weight:700}.save-card{position:sticky;bottom:10px;z-index:2;padding:12px;background:rgba(255,255,255,.94);backdrop-filter:blur(6px)}@media(min-width:520px){body{padding:22px}h1{font-size:34px}.card{padding:22px}.clock{font-size:38px}.prayer-time{font-size:20px}.rule-row{grid-template-columns:1fr 100px 1fr 48px}}
     </style>
     <script>
     function setRelayMode(relayIdx, mode) {
@@ -109,6 +109,28 @@ void sendPageHeader()
                 location.reload();
             })
             .catch(function() { alert('Relay command failed.'); });
+    }
+    // Modes and states can change from ThingsBoard while this page is open.
+    var MODE_LABELS = ['AUTO', 'MANUAL ON', 'MANUAL OFF'];
+    function applyStatus(status) {
+        status.relays.forEach(function(relay, i) {
+            var modeEl = document.getElementById('relayMode' + i);
+            var stateEl = document.getElementById('relayStatus' + i);
+            if(!modeEl || !stateEl) return;
+            modeEl.textContent = MODE_LABELS[relay.mode];
+            stateEl.textContent = relay.on ? 'ON' : 'OFF';
+            stateEl.className = 'relay-status ' + (relay.on ? 'on' : 'off');
+            for(var m = 0; m < 3; m++) {
+                var btn = document.getElementById('modeBtn' + i + '_' + m);
+                if(btn) btn.classList.toggle('active', m === relay.mode);
+            }
+            // Never replace rules being edited here; just say they changed.
+            if(window.pageRules && relay.rules !== window.pageRules[i])
+                document.getElementById('rulesNotice' + i).hidden = false;
+        });
+    }
+    function pollStatus() {
+        fetch('/status').then(function(resp) { return resp.json(); }).then(applyStatus).catch(function() {});
     }
     function formatClock(seconds) {
         var h = Math.floor(seconds / 3600) % 24;
@@ -187,7 +209,10 @@ void sendClockCard(const DateTime &now)
     clockHtml += "<div id='liveClock' class='clock'>--:--:--</div>";
     clockHtml += "<script>initLiveClock(" + String(secondsPastMidnight) + ");</script>";
     clockHtml += "<p class='note'>UTC+2 - Standard Winter Time</p>";
-    clockHtml += "<div class='status-line'>RTC <span class='" + String(rtcOk ? "status-ok'>Sane" : "status-bad'>Invalid") + "</span></div>";
+    if (usingNtpFallback())
+        clockHtml += "<div class='status-line'>RTC <span class='status-bad'>Not working - using network time</span></div>";
+    else
+        clockHtml += "<div class='status-line'>RTC <span class='" + String(rtcOk ? "status-ok'>Sane" : "status-bad'>Invalid") + "</span></div>";
     clockHtml += "<div class='status-line'>Calendar <span class='" + String(schedule.loaded ? "status-ok'>Synced" : "status-bad'>Missing file") + "</span></div>";
     clockHtml += "<div class='status-line'>Automation <span class='" + String(autoOk ? "status-ok'>Enabled" : "status-bad'>Disabled") + "</span></div>";
     NetworkStatus net = getNetworkStatus();
@@ -231,13 +256,14 @@ void sendRelayCards()
         RelayMode mode = getRelayMode(r);
         String card = "<div class='card'>";
         card += "<div class='relay-head'><h2>Relay " + String(r + 1) + "</h2><div class='relay-badges'>";
-        card += "<span class='relay-status'>" + String(relayModeLabel(mode)) + "</span>";
+        card += "<span id='relayMode" + String(r) + "' class='relay-status'>" + String(relayModeLabel(mode)) + "</span>";
         card += "<span id='relayStatus" + String(r) + "' class='relay-status " + String(relayOn ? "on'>ON" : "off'>OFF") + "</span></div></div>";
         card += "<div class='manual-controls'>";
-        card += "<button type='button' class='btn btn-light" + String(mode == RELAY_MODE_AUTO ? " active" : "") + "' onclick='setRelayMode(" + String(r) + ",0)'>AUTO</button>";
-        card += "<button type='button' class='btn btn-green" + String(mode == RELAY_MODE_MANUAL_ON ? " active" : "") + "' onclick='setRelayMode(" + String(r) + ",1)'>ON</button>";
-        card += "<button type='button' class='btn btn-red" + String(mode == RELAY_MODE_MANUAL_OFF ? " active" : "") + "' onclick='setRelayMode(" + String(r) + ",2)'>OFF</button>";
+        card += "<button type='button' id='modeBtn" + String(r) + "_0' class='btn btn-light" + String(mode == RELAY_MODE_AUTO ? " active" : "") + "' onclick='setRelayMode(" + String(r) + ",0)'>AUTO</button>";
+        card += "<button type='button' id='modeBtn" + String(r) + "_1' class='btn btn-green" + String(mode == RELAY_MODE_MANUAL_ON ? " active" : "") + "' onclick='setRelayMode(" + String(r) + ",1)'>ON</button>";
+        card += "<button type='button' id='modeBtn" + String(r) + "_2' class='btn btn-red" + String(mode == RELAY_MODE_MANUAL_OFF ? " active" : "") + "' onclick='setRelayMode(" + String(r) + ",2)'>OFF</button>";
         card += "</div>";
+        card += "<div id='rulesNotice" + String(r) + "' class='rules-notice' hidden>Rules were changed from ThingsBoard. <a href='/'>Reload</a> to see them; saving here first would overwrite them.</div>";
         card += "<table class='rules-table' id='ruleTable" + String(r) + "'></table>";
         card += "<button type='button' class='btn btn-secondary' onclick='addRuleRow(" + String(r) + ",0,0,0)'>Add Rule</button>";
         card += "</div>";
@@ -258,7 +284,17 @@ void sendEventLogCard()
 
 void sendSavedRulesScript()
 {
-    webServer->sendContent("<script>window.onload = function() {syncClockFromBrowser();");
+    char rulesText[RULES_TEXT_MAX];
+    String rulesScript = "<script>var pageRules = [";
+    for (int r = 0; r < RELAY_COUNT; r++)
+    {
+        formatRelayRules(r, rulesText, sizeof(rulesText));
+        rulesScript += String(r ? "," : "") + "'" + rulesText + "'";
+    }
+    rulesScript += "];</script>";
+    webServer->sendContent(rulesScript);
+
+    webServer->sendContent("<script>window.onload = function() {syncClockFromBrowser();setInterval(pollStatus, 3000);");
     for (int r = 0; r < RELAY_COUNT; r++)
     {
         for (int i = 0; i < MAX_RULES; i++)
@@ -284,7 +320,7 @@ void handleRoot()
         return;
     }
 
-    DateTime now = clockRtc->now();
+    DateTime now = currentTime(*clockRtc);
 
     webServer->sendHeader("Cache-Control", "no-cache");
     webServer->setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -332,7 +368,7 @@ void handleRelayControl()
         return;
     }
 
-    DateTime now = clockRtc->now();
+    DateTime now = currentTime(*clockRtc);
     int currentMinsPastMidnight = (now.hour() * 60) + now.minute();
     bool canUseAutomation = isAutomationEnabled() && schedule.loaded && isRtcTimeSane(now);
     changeRelayMode(relayIndex, mode, currentMinsPastMidnight, schedule.prayerMins, now, canUseAutomation, "web");
@@ -383,7 +419,7 @@ void handleFileUpload()
         if (uploadFile)
         {
             uploadFile.close();
-            DateTime now = clockRtc->now();
+            DateTime now = currentTime(*clockRtc);
             bool loaded = loadTodaySchedule(now.month(), now.day());
             if (automationEnabled != nullptr)
                 *automationEnabled = isRtcTimeSane(now) && loaded;
@@ -397,6 +433,22 @@ void handleUploadSuccess()
 {
     webServer->sendHeader("Location", "/");
     webServer->send(303, "text/html", "<html><body>Redirecting...</body></html>");
+}
+
+// Polled by the main page every 3 s. Rules use the compact text form, which is only
+// digits and "+-:;", so it needs no JSON escaping.
+void handleStatus()
+{
+    char rulesText[RULES_TEXT_MAX];
+    String json = "{\"relays\":[";
+    for (int r = 0; r < RELAY_COUNT; r++)
+    {
+        formatRelayRules(r, rulesText, sizeof(rulesText));
+        json += String(r ? "," : "") + "{\"mode\":" + String(getRelayMode(r)) + ",\"on\":" + (getRelayState(r) == RELAY_ON_STATE ? "true" : "false") + ",\"rules\":\"" + rulesText + "\"}";
+    }
+    json += "]}";
+    webServer->sendHeader("Cache-Control", "no-cache");
+    webServer->send(200, "application/json", json);
 }
 
 void redirectTo(const char *location)
@@ -463,7 +515,7 @@ void handleThingsBoardSave()
     settings.useTls = webServer->hasArg("tls");
 
     saveThingsBoardSettings(settings);
-    appendEventLog(clockRtc->now(), settings.token.length() ? "ThingsBoard settings saved for " + settings.host : String("ThingsBoard link turned off"));
+    appendEventLog(currentTime(*clockRtc), settings.token.length() ? "ThingsBoard settings saved for " + settings.host : String("ThingsBoard link turned off"));
     requestThingsBoardReconfigure();
     redirectTo("/network?tb_saved=1");
 }
@@ -551,7 +603,7 @@ void handleNetworkSave()
     }
 
     saveNetworkSettings(settings);
-    appendEventLog(clockRtc->now(), settings.ssid.length() ? "WiFi settings saved for " + settings.ssid : String("WiFi settings cleared; AP only"));
+    appendEventLog(currentTime(*clockRtc), settings.ssid.length() ? "WiFi settings saved for " + settings.ssid : String("WiFi settings cleared; AP only"));
     requestNetworkReconnect();
     redirectTo("/network?saved=1");
 }
@@ -566,6 +618,7 @@ void configureWebServer(WebServer &server, RTC_DS3231 &rtc, bool *automationEnab
     server.on("/", HTTP_GET, handleRoot);
     server.on("/", HTTP_POST, handleRoot);
     server.on("/relay", HTTP_GET, handleRelayControl);
+    server.on("/status", HTTP_GET, handleStatus);
     server.on("/time-sync", HTTP_GET, handleTimeSync);
     server.on("/upload", HTTP_POST, handleUploadSuccess, handleFileUpload);
     server.on("/network", HTTP_GET, handleNetworkPage);

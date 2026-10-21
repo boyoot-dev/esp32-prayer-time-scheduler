@@ -5,6 +5,16 @@
 // The RTC keeps local standard time (UTC+2); the ESP32 system clock keeps UTC, which
 // TLS certificate checks read.
 
+// Call once at boot with whether rtc.begin() found the DS3231.
+void setRtcPresent(bool present);
+
+// Current local standard time: the RTC when it reads sane, otherwise the system clock
+// once NTP or a browser sync has set it (RTC missing or dead), otherwise the RTC's
+// insane reading.
+DateTime currentTime(RTC_DS3231 &rtc);
+// True when currentTime() last fell back to the system clock because the RTC was unusable.
+bool usingNtpFallback();
+
 // Copies trusted RTC time into the system clock, so TLS works before NTP answers.
 void setSystemClockFromRtc(const DateTime &rtcNow);
 

@@ -75,10 +75,12 @@ void safeStartupDelay()
 
 bool initializeRtc()
 {
-    if (!rtc.begin())
+    bool found = rtc.begin();
+    setRtcPresent(found);
+    if (!found)
     {
-        Serial.println("RTC not found; automation disabled");
-        appendEventLog("RTC not found; automation disabled");
+        Serial.println("RTC not found; automation waits for NTP or browser time");
+        appendEventLog("RTC not found; automation waits for NTP or browser time");
         return false;
     }
 
@@ -132,7 +134,7 @@ void loadScheduleForDate(const DateTime &now, bool restoreRelays)
 
 void handleRemoteCommand(const RemoteCommand &command)
 {
-    DateTime now = rtc.now();
+    DateTime now = currentTime(rtc);
     int currentMinsPastMidnight = (now.hour() * 60) + now.minute();
     bool canUseAutomation = automationEnabled && schedule.loaded && isRtcTimeSane(now);
 
@@ -161,7 +163,7 @@ void reportCurrentState()
         state.relayMode[r] = getRelayMode(r);
         anyRelayOn = anyRelayOn || state.relayOn[r];
     }
-    state.rtcOk = rtcSane;
+    state.rtcOk = rtcSane && !usingNtpFallback();
     state.scheduleLoaded = schedule.loaded;
     state.automationEnabled = automationEnabled && schedule.loaded && rtcSane;
     for (int p = 0; p < PRAYER_COUNT; p++)
@@ -199,7 +201,7 @@ void setup()
     reportRelayRules();
 
     automationEnabled = initializeRtc();
-    DateTime now = rtc.now();
+    DateTime now = currentTime(rtc);
     rtcSane = automationEnabled;
     if (automationEnabled)
     {
@@ -239,7 +241,7 @@ void loop()
         return;
 
     lastCheck = millis();
-    DateTime now = rtc.now();
+    DateTime now = currentTime(rtc);
 
     DateTime ntpNow;
     if (takeNtpSync(ntpNow) && isRtcTimeSane(ntpNow))
@@ -247,7 +249,9 @@ void loop()
         uint32_t rtcSec = now.unixtime();
         uint32_t ntpSec = ntpNow.unixtime();
         uint32_t driftSec = rtcSec > ntpSec ? rtcSec - ntpSec : ntpSec - rtcSec;
-        if (driftSec >= 2)
+        // Also when automation is off: without an RTC the clock never drifts from NTP,
+        // and this is what turns automation on from NTP time.
+        if (driftSec >= 2 || !automationEnabled)
         {
             applyClockSync(rtc, automationEnabled, ntpNow, "NTP");
             now = ntpNow;
