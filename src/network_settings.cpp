@@ -21,6 +21,7 @@ ThingsBoardSettings loadThingsBoardSettings()
     settings.useTls = prefs.getBool("tls", settings.useTls);
     settings.httpHost = prefs.getString("http_host", settings.httpHost);
     settings.httpPort = prefs.getUShort("http_port", settings.httpPort);
+    settings.autoUpdate = prefs.getBool("auto_update", settings.autoUpdate);
     prefs.end();
     return settings;
 }
@@ -37,6 +38,7 @@ void saveThingsBoardSettings(const ThingsBoardSettings &settings)
     prefs.putBool("tls", settings.useTls);
     prefs.putString("http_host", settings.httpHost);
     prefs.putUShort("http_port", settings.httpPort);
+    prefs.putBool("auto_update", settings.autoUpdate);
     prefs.end();
 }
 

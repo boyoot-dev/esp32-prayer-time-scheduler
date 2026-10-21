@@ -30,6 +30,8 @@ Add one widget per board.
 | AUTO / ON / OFF | `set_relay_mode` | `{"relay": 1-4, "mode": "auto"\|"on"\|"off"}` |
 | Rules → Save | `set_rules` | `{"relay": 1-4, "rules": "1+10:1;1+20:0"}` |
 | Check for update | `fw_check` | `{}` |
+| Auto-update switch | `set_auto_update` | `{"enabled": true\|false}` |
+| Install (shown when an update waits and auto-update is off) | `fw_install` | `{}` |
 | Reboot | `reboot` | `{}` |
 
 All are two-way RPCs (`POST /api/plugins/rpc/twoway/{deviceId}`), so errors from the
@@ -50,7 +52,7 @@ every relay OFF for the 10 s startup safety delay.
 | Kind | Keys |
 |---|---|
 | Telemetry | `heartbeat`, `relay1_state`…`relay4_state`, `relay1_mode`…`relay4_mode`, `rtc_ok`, `schedule_loaded`, `automation_enabled`, `current_fw_version`, `event` |
-| Client attributes | `fajr`, `dhuhr`, `asr`, `maghrib`, `isha`, `relay1_rules`…`relay4_rules`, `ip`, `rssi`, `uptime_s`, `fw_waiting` |
+| Client attributes | `fajr`, `dhuhr`, `asr`, `maghrib`, `isha`, `relay1_rules`…`relay4_rules`, `ip`, `rssi`, `uptime_s`, `fw_waiting`, `auto_update` |
 
 The event list's first load uses the REST range query
 (`/api/plugins/telemetry/DEVICE/{id}/values/timeseries?keys=event&limit=10&orderBy=DESC`);

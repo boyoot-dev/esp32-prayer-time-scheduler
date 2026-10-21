@@ -40,6 +40,8 @@
     <span>IP <b data-attr="ip">—</b></span>
     <span>WiFi <b data-attr="rssi">—</b></span>
     <span>Up <b data-attr="uptime_s">—</b></span>
+    <label class="pt-auto-update"><input type="checkbox" class="pt-auto-update-box"> Auto-update</label>
+    <button type="button" class="pt-fw-install" hidden>Install now</button>
     <button type="button" class="pt-fw-check">Check for update</button>
     <button type="button" class="pt-reboot">Reboot</button>
   </div>
@@ -73,7 +75,7 @@
   // telemetry point; give up waiting after this long.
   var PENDING_TIMEOUT_MS = 10000;
   var STATUS_KEYS = ['rtc_ok', 'schedule_loaded', 'automation_enabled'];
-  var ATTRIBUTE_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha', 'ip', 'rssi', 'uptime_s', 'fw_waiting'];
+  var ATTRIBUTE_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha', 'ip', 'rssi', 'uptime_s', 'fw_waiting', 'auto_update'];
   var PRAYER_NAMES = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
   var MAX_RULES = 10;
   var EVENT_COUNT = 10;
@@ -471,7 +473,13 @@
       } else if (key === 'uptime_s') {
         value = formatUptime(value);
       } else if (key === 'fw_waiting') {
-        value = value ? ' (update ' + value + ' waiting until relays are idle)' : '';
+        firmware.waiting = value || '';
+        renderFirmware();
+        return;
+      } else if (key === 'auto_update') {
+        firmware.autoUpdate = isTrue(value);
+        renderFirmware();
+        return;
       }
       setText('[data-attr="' + key + '"]', value);
     });
@@ -562,7 +570,47 @@
     };
   }
 
-  // ---- firmware check ----
+  // ---- firmware ----
+
+  var firmware = { waiting: '', autoUpdate: true };
+  var fwInstallBtn = root.querySelector('.pt-fw-install');
+  var autoUpdateBox = root.querySelector('.pt-auto-update-box');
+
+  function renderFirmware() {
+    autoUpdateBox.checked = firmware.autoUpdate;
+    fwInstallBtn.hidden = !firmware.waiting || firmware.autoUpdate;
+    fwInstallBtn.textContent = 'Install ' + firmware.waiting;
+    setText('[data-attr="fw_waiting"]', !firmware.waiting ? '' :
+      firmware.autoUpdate ? ' (update ' + firmware.waiting + ' installs when relays are idle)'
+                          : ' (update ' + firmware.waiting + ' waiting for Install)');
+  }
+
+  autoUpdateBox.addEventListener('change', function() {
+    var enabled = autoUpdateBox.checked;
+    sendRpc('set_auto_update', { enabled: enabled }).then(function(reply) {
+      if (reply && reply.success === false) {
+        throw new Error(reply.error || 'rejected by the board');
+      }
+      showMessage('Automatic updates ' + (enabled ? 'on' : 'off') + '.', false);
+    }).catch(function(err) {
+      autoUpdateBox.checked = !enabled;
+      showMessage('Auto-update: ' + err.message, true);
+    });
+  });
+
+  fwInstallBtn.addEventListener('click', function() {
+    if (!confirm('Install ' + firmware.waiting + '? The board restarts once all relays are OFF and no rule is due in 15 minutes; relays stay OFF for about 10 seconds.')) {
+      return;
+    }
+    sendRpc('fw_install', {}).then(function(reply) {
+      if (reply && reply.success === false) {
+        throw new Error(reply.error || 'rejected by the board');
+      }
+      showMessage('Install requested; it starts once the relays are idle.', false);
+    }).catch(function(err) {
+      showMessage('Install: ' + err.message, true);
+    });
+  });
 
   var fwCheckBtn = root.querySelector('.pt-fw-check');
   fwCheckBtn.addEventListener('click', function() {

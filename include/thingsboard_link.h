@@ -55,5 +55,22 @@ void thingsBoardLoop(unsigned long now);
 // Applies newly saved settings: starts the link if it wasn't running, otherwise restarts
 // the board (TbLink can't switch servers live). Safe to call from any task.
 void requestThingsBoardReconfigure();
+
+// Firmware updates. An assigned update installs by itself once the relays are idle when
+// auto-update is on; with it off, only after requestFirmwareInstall(). Safe from any task.
+struct FirmwareStatus
+{
+    char waiting[24];   // version waiting to install, "" if none
+    char lastError[64]; // last failed attempt since boot, "" if none
+    bool autoUpdate;
+    bool installRequested;
+};
+FirmwareStatus getFirmwareStatus();
+// Asks ThingsBoard for the assigned firmware now instead of at the 30-minute refresh.
+void requestFirmwareCheck();
+// Allows a waiting update to install (once relays are idle); false if none is waiting.
+bool requestFirmwareInstall();
+// Saves the setting to NVS and applies it immediately.
+void setAutoUpdate(bool enabled);
 bool isThingsBoardStarted();
 bool isThingsBoardConnected();

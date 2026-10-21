@@ -295,8 +295,25 @@
 .pt-footer b {
   color: var(--text);
 }
-.pt-fw-check {
+.pt-auto-update {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   margin-left: auto;
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+.pt-fw-install {
+  padding: 6px 12px;
+  border: 1px solid var(--green);
+  border-radius: 6px;
+  background: var(--green);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+.pt-fw-check {
   padding: 6px 12px;
   border: 1px solid #cbd5e1;
   border-radius: 6px;

@@ -25,6 +25,8 @@ struct ThingsBoardSettings
     // TLS handshake. The firmware checksum still arrives over MQTT and is verified.
     String httpHost = "iot.boyoot.dev";
     uint16_t httpPort = 80;
+    // Off: an assigned update waits for someone to press Install, still only on idle relays.
+    bool autoUpdate = true;
 };
 
 // Stored in NVS, so safe to call from either core.

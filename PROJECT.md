@@ -61,12 +61,12 @@ Cross-core only through: `DeviceState` snapshot (250 ms, spinlock), rules-text s
 
 - MQTT `mqtt.iot.boyoot.dev:8883` TLS (ISRG Root X1); waits for a valid clock before connecting
 - OTA download `iot.boyoot.dev:80` plain HTTP (checksum verified); title `prayer-timer`, version `FW_VERSION`
-- OTA installs only when all relays are OFF and no AUTO rule is due within 15 min; `fw_waiting` shows a held update
+- OTA installs only when all relays are OFF and no AUTO rule is due within 15 min, and (if `auto_update` is off) after Install; restarts by itself
 - Firmware assignment re-requested every 30 min
 
 Telemetry: `relay1..4_state`, `relay1..4_mode` (`auto|on|off`), `rtc_ok`, `schedule_loaded`, `automation_enabled`, `event`, `heartbeat` (8 s), `current_fw_title`, `current_fw_version`
 
-Attributes: `fajr..isha` (`HH:MM`), `relay1..4_rules`, `ip`, `rssi`, `uptime_s`, `fw_waiting`
+Attributes: `fajr..isha` (`HH:MM`), `relay1..4_rules`, `ip`, `rssi`, `uptime_s`, `fw_waiting`, `auto_update`
 
 RPC:
 
@@ -75,6 +75,8 @@ RPC:
 | `set_relay_mode` | `{"relay": 1-4, "mode": "auto"\|"on"\|"off"}` |
 | `set_rules` | `{"relay": 1-4, "rules": "1+10:1;1+20:0"}` |
 | `fw_check` | `{}` |
+| `fw_install` | `{}` |
+| `set_auto_update` | `{"enabled": bool}` |
 | `reboot` | `{}` |
 
 Rules text: `<prayer 0-4><+/-offset>:<1|0>` joined by `;` (fits TbLink's 128-byte publish buffer).
@@ -92,6 +94,7 @@ Dashboard widget: [thingsboard/control-panel/](thingsboard/control-panel/).
 | `POST` | `/upload` | Schedule CSV (field `update`) |
 | `GET`/`POST` | `/network` | Network status / save WiFi settings |
 | `POST` | `/thingsboard` | Save ThingsBoard settings (restarts if already connected) |
+| `POST` | `/firmware` | `action=save\|check\|install` |
 
 No authentication on any route.
 
@@ -104,7 +107,7 @@ No authentication on any route.
 | LittleFS `/relay_state.bin` | Modes + states, magic `0x50545231`, version 1 |
 | LittleFS `/events.log` | Last 100 events |
 | NVS `network` | `ssid`, `pass`, `static`, `ip`, `gw`, `mask`, `dns` |
-| NVS `thingsboard` | `token`, `host`, `port`, `tls`, `http_host`, `http_port` |
+| NVS `thingsboard` | `token`, `host`, `port`, `tls`, `http_host`, `http_port`, `auto_update` |
 
 ## Safety
 

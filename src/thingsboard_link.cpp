@@ -47,11 +47,21 @@ struct EventText
 };
 QueueHandle_t eventQueue = nullptr;
 
+// Firmware update state: the network task writes the strings, the web page reads them.
+portMUX_TYPE firmwareMux = portMUX_INITIALIZER_UNLOCKED;
+char waitingVersion[24] = "";
+char lastUpdateError[64] = "";
+volatile bool autoUpdate = true;
+volatile bool installRequested = false;
+volatile bool firmwareCheckRequested = false;
+
 // Network task only.
 bool useTls = false;
 bool wasConnected = false;
 bool loggedClockWait = false;
 uint32_t sentRulesVersion = 0;
+String sentWaitingVersion;
+bool sentAutoUpdate = true;
 DeviceState sentState;
 unsigned long lastFullState = 0;
 unsigned long lastDeviceInfo = 0;
@@ -136,12 +146,42 @@ bool handleRpc(const String &method, JsonVariantConst params, JsonDocument &resp
 
     // Re-asks ThingsBoard for the assigned firmware now instead of at the next 30-minute
     // refresh. Doesn't restart anything; an update found still waits for idle relays.
+    // The request is sent after this handler returns: TbLink parses incoming commands in
+    // place in the MQTT buffer, so publishing from here would overwrite this command.
     if (method == "fw_check")
     {
-        tb.refreshSharedAttributes();
+        firmwareCheckRequested = true;
         response["success"] = true;
         response["current"] = FW_VERSION;
-        response["waiting"] = tb.pendingOtaVersion();
+        response["waiting"] = waitingVersion;
+        response["auto_update"] = autoUpdate;
+        return true;
+    }
+
+    if (method == "set_auto_update")
+    {
+        if (!params["enabled"].is<bool>())
+        {
+            response["success"] = false;
+            response["error"] = "expected {\"enabled\": true|false}";
+            return true;
+        }
+        setAutoUpdate(params["enabled"].as<bool>());
+        response["success"] = true;
+        return true;
+    }
+
+    // Installs a waiting update even with auto-update off, still only once relays are idle.
+    if (method == "fw_install")
+    {
+        if (!requestFirmwareInstall())
+        {
+            response["success"] = false;
+            response["error"] = "no update is waiting";
+            return true;
+        }
+        response["success"] = true;
+        response["installing"] = waitingVersion;
         return true;
     }
 
@@ -207,7 +247,29 @@ void sendDeviceInfo()
     tb.sendAttribute("ip", WiFi.localIP().toString().c_str());
     tb.sendAttribute("rssi", static_cast<int>(WiFi.RSSI()));
     tb.sendAttribute("uptime_s", static_cast<int>(millis() / 1000));
-    tb.sendAttribute("fw_waiting", tb.pendingOtaVersion().c_str());
+}
+
+// Caches TbLink's waiting update for the web page and publishes firmware state when it
+// changes, so the panel doesn't wait for the next device-info round.
+void syncFirmwareState(bool connected, bool full)
+{
+    String waiting = tb.pendingOtaVersion();
+    portENTER_CRITICAL(&firmwareMux);
+    strlcpy(waitingVersion, waiting.c_str(), sizeof(waitingVersion));
+    portEXIT_CRITICAL(&firmwareMux);
+
+    if (!connected)
+        return;
+    if (full || waiting != sentWaitingVersion)
+    {
+        tb.sendAttribute("fw_waiting", waiting.c_str());
+        sentWaitingVersion = waiting;
+    }
+    if (full || autoUpdate != sentAutoUpdate)
+    {
+        tb.sendAttribute("auto_update", static_cast<bool>(autoUpdate));
+        sentAutoUpdate = autoUpdate;
+    }
 }
 
 void sendRules(bool full)
@@ -241,7 +303,7 @@ bool safeToInstallUpdate()
     portENTER_CRITICAL(&stateMux);
     bool safe = reportedStateValid && reportedState.safeToRestart;
     portEXIT_CRITICAL(&stateMux);
-    return safe;
+    return safe && (autoUpdate || installRequested);
 }
 
 void publishState(unsigned long now, bool justConnected)
@@ -299,8 +361,14 @@ void startLink()
     tb.onOtaGate(safeToInstallUpdate);
     tb.onOtaResult([](bool success, const String &error)
                    {
-                       if (!success)
-                           Serial.println("OTA update failed: " + error); });
+                       // Success restarts the board, so only a failure gets here.
+                       installRequested = false;
+                       if (success)
+                           return;
+                       Serial.println("OTA update failed: " + error);
+                       portENTER_CRITICAL(&firmwareMux);
+                       strlcpy(lastUpdateError, error.c_str(), sizeof(lastUpdateError));
+                       portEXIT_CRITICAL(&firmwareMux); });
     tb.begin(mqtt, ota);
 
     useTls = settings.useTls;
@@ -347,7 +415,43 @@ bool takeRemoteCommand(RemoteCommand &command)
 void beginThingsBoard()
 {
     commandQueue = xQueueCreate(8, sizeof(RemoteCommand));
+    autoUpdate = loadThingsBoardSettings().autoUpdate;
     startLink();
+}
+
+FirmwareStatus getFirmwareStatus()
+{
+    FirmwareStatus status;
+    portENTER_CRITICAL(&firmwareMux);
+    strlcpy(status.waiting, waitingVersion, sizeof(status.waiting));
+    strlcpy(status.lastError, lastUpdateError, sizeof(status.lastError));
+    portEXIT_CRITICAL(&firmwareMux);
+    status.autoUpdate = autoUpdate;
+    status.installRequested = installRequested;
+    return status;
+}
+
+void requestFirmwareCheck()
+{
+    firmwareCheckRequested = true;
+}
+
+bool requestFirmwareInstall()
+{
+    portENTER_CRITICAL(&firmwareMux);
+    bool waiting = waitingVersion[0] != '\0';
+    portEXIT_CRITICAL(&firmwareMux);
+    if (waiting)
+        installRequested = true;
+    return waiting;
+}
+
+void setAutoUpdate(bool enabled)
+{
+    ThingsBoardSettings settings = loadThingsBoardSettings();
+    settings.autoUpdate = enabled;
+    saveThingsBoardSettings(settings);
+    autoUpdate = enabled;
 }
 
 void thingsBoardLoop(unsigned long now)
@@ -391,14 +495,21 @@ void thingsBoardLoop(unsigned long now)
 
     bool connected = tb.connected();
     cloudConnected = connected;
+    bool justConnected = connected && !wasConnected;
+    syncFirmwareState(connected, justConnected);
     if (!connected)
     {
         wasConnected = false;
         return;
     }
-
-    bool justConnected = !wasConnected;
     wasConnected = true;
+
+    if (firmwareCheckRequested)
+    {
+        firmwareCheckRequested = false;
+        tb.refreshSharedAttributes();
+    }
+
     publishState(now, justConnected);
     sendRules(justConnected);
     sendEvents();

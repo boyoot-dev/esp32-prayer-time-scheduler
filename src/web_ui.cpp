@@ -5,6 +5,7 @@
 #include "app_config.h"
 #include "clock_sync.h"
 #include "event_log.h"
+#include "firmware_version.h"
 #include "net.h"
 #include "network_settings.h"
 #include "relay_rules.h"
@@ -246,6 +247,11 @@ void sendClockCard(const DateTime &now)
     clockHtml += "<div class='status-line'>Automation <span class='" + String(autoOk ? "status-ok'>Enabled" : "status-bad'>Disabled") + "</span></div>";
     NetworkStatus net = getNetworkStatus();
     clockHtml += "<div class='status-line'>WiFi <span class='" + String(net.wifiConnected ? "status-ok'>" + net.ip : "status-bad'>Not connected") + "</span> <a href='/network'>Settings</a></div>";
+    FirmwareStatus fw = getFirmwareStatus();
+    clockHtml += "<div class='status-line'>Firmware <span class='status-ok'>" + String(FW_VERSION) + "</span>";
+    if (fw.waiting[0] != '\0')
+        clockHtml += " <a href='/network'>Update " + escapeHtml(fw.waiting) + " waiting</a>";
+    clockHtml += "</div>";
     webServer->sendContent(clockHtml);
 
     if (schedule.loaded)
@@ -549,6 +555,53 @@ void handleThingsBoardSave()
     redirectTo("/network?tb_saved=1");
 }
 
+void sendFirmwareCard()
+{
+    FirmwareStatus fw = getFirmwareStatus();
+    String card = "<div class='card upload-row'><h2>Firmware</h2>";
+    card += "<div class='status-line'>Running <span class='status-ok'>" + String(FW_TITLE) + " " + FW_VERSION + "</span></div>";
+    if (fw.waiting[0] != '\0')
+    {
+        String when = fw.installRequested || fw.autoUpdate ? "installs once all relays are OFF and no rule is due in 15 min" : "waiting for Install";
+        card += "<div class='status-line'>Update <span class='status-bad'>" + escapeHtml(fw.waiting) + " - " + when + "</span></div>";
+    }
+    if (fw.lastError[0] != '\0')
+        card += "<div class='status-line'>Last attempt <span class='status-bad'>" + escapeHtml(fw.lastError) + "</span></div>";
+    card += "<p class='note'>Updates are assigned in ThingsBoard. The board finds them on its own (pushed live, or within 30 minutes) and restarts itself to install; relays go OFF for about 10 seconds.</p>";
+
+    card += "<form method='POST' action='/firmware' class='upload-row'>";
+    card += "<label class='field'><span><input type='checkbox' name='auto_update' value='1'" + String(fw.autoUpdate ? " checked" : "") + "> Install updates automatically</span></label>";
+    card += "<button type='submit' name='action' value='save' class='btn btn-secondary'>Save</button>";
+    card += "<button type='submit' name='action' value='check' class='btn btn-light'>Check for update now</button>";
+    if (fw.waiting[0] != '\0' && !fw.autoUpdate && !fw.installRequested)
+        card += "<button type='submit' name='action' value='install' class='btn btn-green'>Install " + escapeHtml(fw.waiting) + "</button>";
+    card += "</form></div>";
+    webServer->sendContent(card);
+}
+
+void handleFirmwareAction()
+{
+    String action = webServer->arg("action");
+    DateTime now = currentTime(*clockRtc);
+    if (action == "save")
+    {
+        bool enabled = webServer->hasArg("auto_update");
+        setAutoUpdate(enabled);
+        appendEventLog(now, String("Automatic firmware updates ") + (enabled ? "on" : "off") + " (web)");
+        redirectTo("/network?fw=saved");
+    }
+    else if (action == "install" && requestFirmwareInstall())
+    {
+        appendEventLog(now, "Firmware install requested (web)");
+        redirectTo("/network?fw=install");
+    }
+    else
+    {
+        requestFirmwareCheck();
+        redirectTo("/network?fw=check");
+    }
+}
+
 void sendNetworkStatusCard(const NetworkSettings &saved)
 {
     NetworkStatus net = getNetworkStatus();
@@ -583,6 +636,14 @@ void handleNetworkPage()
         webServer->sendContent("<div class='card status-ok'>Saved. Joining the network...</div>");
     else if (webServer->hasArg("tb_saved"))
         webServer->sendContent("<div class='card status-ok'>ThingsBoard settings saved.</div>");
+    else if (webServer->arg("fw") == "check")
+        webServer->sendContent("<div class='card status-ok'>Asked ThingsBoard for an assigned update. Reload in a few seconds to see if one is waiting.</div>");
+    else if (webServer->arg("fw") == "install")
+        webServer->sendContent("<div class='card status-ok'>Install requested. It starts once all relays are OFF and no rule is due in 15 minutes.</div>");
+    else if (webServer->arg("fw") == "saved")
+        webServer->sendContent("<div class='card status-ok'>Firmware setting saved.</div>");
+
+    sendFirmwareCard();
 
     String form = "<form method='POST' action='/network' class='card upload-row'><h2>WiFi Network</h2>";
     form += "<p class='note'>The setup AP stays on either way. Leave the network name empty to run AP only.</p>";
@@ -653,5 +714,6 @@ void configureWebServer(WebServer &server, RTC_DS3231 &rtc, bool *automationEnab
     server.on("/network", HTTP_GET, handleNetworkPage);
     server.on("/network", HTTP_POST, handleNetworkSave);
     server.on("/thingsboard", HTTP_POST, handleThingsBoardSave);
+    server.on("/firmware", HTTP_POST, handleFirmwareAction);
 }
 

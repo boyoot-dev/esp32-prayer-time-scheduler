@@ -198,7 +198,8 @@ Changing ThingsBoard settings on a board that is already connected restarts it (
 | Telemetry | `current_fw_title`, `current_fw_version` | On each connect, from TbLink |
 | Attribute | `fajr`, `dhuhr`, `asr`, `maghrib`, `isha` | Today's times, `HH:MM` |
 | Attribute | `relay1_rules`…`relay4_rules` | Compact rules text, see below |
-| Attribute | `ip`, `rssi`, `uptime_s`, `fw_waiting` | Every 60 s |
+| Attribute | `ip`, `rssi`, `uptime_s` | Every 60 s |
+| Attribute | `fw_waiting`, `auto_update` | On connect and whenever they change |
 
 State is published when it changes (checked every 250 ms), in full on every connect, and again every 5 minutes.
 
@@ -208,7 +209,9 @@ State is published when it changes (checked every 250 ms), in full on every conn
 |---|---|---|
 | `set_relay_mode` | `{"relay": 1-4, "mode": "auto"\|"on"\|"off"}` | Same as the local AUTO/ON/OFF buttons |
 | `set_rules` | `{"relay": 1-4, "rules": "1+10:1;1+20:0"}` | Replaces that relay's rules; `""` clears them |
-| `fw_check` | `{}` | Re-requests the assigned firmware now; replies `current` and `waiting` versions. No restart |
+| `fw_check` | `{}` | Re-requests the assigned firmware now; replies `current`, `waiting`, `auto_update`. No restart |
+| `fw_install` | `{}` | Lets a waiting update install with auto-update off (still only on idle relays) |
+| `set_auto_update` | `{"enabled": true\|false}` | Turns automatic installs on/off (saved in NVS) |
 | `reboot` | `{}` | Restarts the board after 1 s (relays OFF for the startup delay) |
 
 Replies are `{"success": true}` once the command is queued, or `{"success": false, "error": "..."}` for bad parameters. The result shows up in the telemetry and attributes above.
@@ -219,8 +222,12 @@ Replies are `{"success": true}` once the command is queued, or `{"success": fals
 
 1. Bump `FW_VERSION` in [include/firmware_version.h](include/firmware_version.h) and build.
 2. In ThingsBoard → OTA updates, upload `.pio/build/esp32dev/firmware.bin` with title **`prayer-timer`** and the same version string. Both must match byte-for-byte.
-3. Assign the package to the device (or its profile). The board picks it up within 30 minutes, on its next reconnect, or immediately with **Check for update** on the panel (`fw_check`). No manual reboot is needed.
-4. The board installs it only when **all relays are OFF and no AUTO rule is due within 15 minutes**. Until then, `fw_waiting` shows the version and the widget footer says it is waiting. Installing ends in a restart.
+3. Assign the package to the device (or its profile). ThingsBoard usually pushes the assignment to the connected board immediately; as a fallback the board re-asks every 30 minutes and on every reconnect. **Check for update** (panel or local `/network` page) re-asks at once.
+4. The board installs it only when **all relays are OFF and no AUTO rule is due within 15 minutes**, and, if **auto-update** is off, only after someone presses **Install** (panel, local page, or `fw_install`). Until then, `fw_waiting` shows the version. Installing downloads (~16 s), verifies the SHA256 checksum and **restarts by itself**; no manual reboot is needed.
+
+Auto-update is on by default. Turn it off on the `/network` page's Firmware card or with the panel's Auto-update switch (`set_auto_update`) to control exactly when a board restarts.
+
+Verified on the bench (1.1.0 → 1.1.1): a package titled differently was ignored, the correctly titled one was pushed live, downloaded in 16 s, verified and installed with an automatic restart.
 
 A package with a different title is ignored, so a binary for another board can never be flashed onto this one.
 
@@ -296,6 +303,7 @@ Routes are registered in `configureWebServer()` in [src/web_ui.cpp](src/web_ui.c
 | `GET` | `/network` | Network status (WiFi, AP, NTP, ThingsBoard) and the WiFi + ThingsBoard forms |
 | `POST` | `/network` | Save WiFi settings (`ssid`, `password`, `static`, `ip`, `gateway`, `subnet`, `dns`) and rejoin |
 | `POST` | `/thingsboard` | Save ThingsBoard settings (`token`, `host`, `port`, `tls`, `http_host`, `http_port`, `clear_token`) |
+| `POST` | `/firmware` | `action=save` (with `auto_update`), `check`, or `install` |
 
 Password and token fields are never sent back to the browser. Leaving them blank keeps the saved value; for WiFi, only while the network name is unchanged.
 
@@ -319,7 +327,7 @@ The page is streamed in chunks (`sendContent`) to keep RAM use low. Arduino's `W
 | Namespace | Keys |
 |---|---|
 | `network` | `ssid`, `pass`, `static`, `ip`, `gw`, `mask`, `dns` |
-| `thingsboard` | `token`, `host`, `port`, `tls`, `http_host`, `http_port` |
+| `thingsboard` | `token`, `host`, `port`, `tls`, `http_host`, `http_port`, `auto_update` |
 
 NVS lives in its own partition and survives both firmware updates and LittleFS reformatting.
 
