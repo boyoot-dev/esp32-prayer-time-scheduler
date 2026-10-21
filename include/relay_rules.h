@@ -28,6 +28,8 @@ int getRelayState(int relayIndex);
 const char *relayModeLabel(RelayMode mode);
 RelayMode getRelayMode(int relayIndex);
 void setRelayMode(int relayIndex, RelayMode mode);
+// Sets a relay's mode and applies it now; `source` ("web", "ThingsBoard") goes in the event log.
+void changeRelayMode(int relayIndex, RelayMode mode, int currentMinsPastMidnight, const int prayerTimes[PRAYER_COUNT], const DateTime &now, bool automationEnabled, const char *source);
 void loadRelaySettingsFromStorage();
 void saveRelaySettingsToStorage();
 void applyRelayStateForModeAtTime(int relayIndex, int currentMinsPastMidnight, const int prayerTimes[PRAYER_COUNT], const DateTime &now, bool automationEnabled);

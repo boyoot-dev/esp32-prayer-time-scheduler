@@ -5,6 +5,39 @@
 namespace
 {
 const char *PREFS_NAMESPACE = "network";
+const char *THINGSBOARD_PREFS_NAMESPACE = "thingsboard";
+}
+
+ThingsBoardSettings loadThingsBoardSettings()
+{
+    ThingsBoardSettings settings;
+    Preferences prefs;
+    if (!prefs.begin(THINGSBOARD_PREFS_NAMESPACE, true))
+        return settings;
+
+    settings.token = prefs.getString("token", settings.token);
+    settings.host = prefs.getString("host", settings.host);
+    settings.port = prefs.getUShort("port", settings.port);
+    settings.useTls = prefs.getBool("tls", settings.useTls);
+    settings.httpHost = prefs.getString("http_host", settings.httpHost);
+    settings.httpPort = prefs.getUShort("http_port", settings.httpPort);
+    prefs.end();
+    return settings;
+}
+
+void saveThingsBoardSettings(const ThingsBoardSettings &settings)
+{
+    Preferences prefs;
+    if (!prefs.begin(THINGSBOARD_PREFS_NAMESPACE, false))
+        return;
+
+    prefs.putString("token", settings.token);
+    prefs.putString("host", settings.host);
+    prefs.putUShort("port", settings.port);
+    prefs.putBool("tls", settings.useTls);
+    prefs.putString("http_host", settings.httpHost);
+    prefs.putUShort("http_port", settings.httpPort);
+    prefs.end();
 }
 
 NetworkSettings loadNetworkSettings()

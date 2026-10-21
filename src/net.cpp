@@ -7,6 +7,7 @@
 #include "app_config.h"
 #include "clock_sync.h"
 #include "network_settings.h"
+#include "thingsboard_link.h"
 
 namespace
 {
@@ -16,8 +17,8 @@ constexpr unsigned long STA_RETRY_MS = 15000;
 constexpr unsigned long STA_RETRY_WITH_AP_CLIENTS_MS = 120000;
 
 // The WiFi driver can keep reporting WL_CONNECTED after the link has silently died.
-// Ping the gateway once a minute; two failed checks in a row force a WiFi rejoin.
-// Never a reboot: this board drives relays.
+// While ThingsBoard isn't connected, ping the gateway once a minute; two failed checks
+// in a row force a WiFi rejoin. Never a reboot: this board drives relays.
 constexpr unsigned long LINK_CHECK_MS = 60000;
 constexpr int LINK_FAILS_BEFORE_RESET = 2;
 
@@ -118,7 +119,7 @@ bool gatewayReachable()
 
 void linkWatchdog(unsigned long now)
 {
-    if (WiFi.status() != WL_CONNECTED)
+    if (WiFi.status() != WL_CONNECTED || isThingsBoardConnected())
     {
         linkFails = 0;
         lastLinkCheck = now;
@@ -153,6 +154,7 @@ void networkTask(void *)
         unsigned long now = millis();
         manageWifi(now);
         linkWatchdog(now);
+        thingsBoardLoop(now);
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
@@ -183,6 +185,7 @@ void beginNetwork()
     if (settings.ssid.length() == 0)
         Serial.println("No WiFi network saved; AP only");
     joinWifi();
+    beginThingsBoard();
 
     xTaskCreatePinnedToCore(networkTask, "network", 8192, nullptr, 1, nullptr, 0);
 }

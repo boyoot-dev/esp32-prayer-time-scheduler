@@ -149,6 +149,23 @@ void setRelayMode(int relayIndex, RelayMode mode)
     }
 }
 
+void changeRelayMode(int relayIndex, RelayMode mode, int currentMinsPastMidnight, const int prayerTimes[PRAYER_COUNT], const DateTime &now, bool automationEnabled, const char *source)
+{
+    if (relayIndex < 0 || relayIndex >= RELAY_COUNT)
+        return;
+
+    setRelayMode(relayIndex, mode);
+
+    if (mode == RELAY_MODE_MANUAL_ON)
+        setRelayState(relayIndex, RELAY_ON_STATE);
+    else if (mode == RELAY_MODE_MANUAL_OFF)
+        setRelayState(relayIndex, RELAY_OFF_STATE);
+    else
+        applyRelayStateForModeAtTime(relayIndex, currentMinsPastMidnight, prayerTimes, now, automationEnabled);
+
+    appendEventLog(now, "Relay " + String(relayIndex + 1) + " mode " + String(relayModeLabel(mode)) + "; state " + relayStateLabel(getRelayState(relayIndex)) + " (" + source + ")");
+}
+
 void loadRelaySettingsFromStorage()
 {
     resetRelaySettings();

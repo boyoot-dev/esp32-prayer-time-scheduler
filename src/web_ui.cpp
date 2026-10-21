@@ -9,6 +9,7 @@
 #include "network_settings.h"
 #include "relay_rules.h"
 #include "schedule_manager.h"
+#include "thingsboard_link.h"
 #include "time_safety.h"
 
 namespace
@@ -48,13 +49,6 @@ String relayStateText(int state)
 bool isAutomationEnabled()
 {
     return automationEnabled != nullptr && *automationEnabled;
-}
-
-void restoreSingleRelayFromCurrentMode(int relayIndex, const DateTime &now)
-{
-    int currentMinsPastMidnight = (now.hour() * 60) + now.minute();
-    bool canUseAutomation = isAutomationEnabled() && schedule.loaded && isRtcTimeSane(now);
-    applyRelayStateForModeAtTime(relayIndex, currentMinsPastMidnight, schedule.prayerMins, now, canUseAutomation);
 }
 
 void restoreAllRelaysFromCurrentModes(const DateTime &now)
@@ -338,16 +332,9 @@ void handleRelayControl()
     }
 
     DateTime now = clockRtc->now();
-    setRelayMode(relayIndex, mode);
-
-    if (mode == RELAY_MODE_MANUAL_ON)
-        setRelayState(relayIndex, RELAY_ON_STATE);
-    else if (mode == RELAY_MODE_MANUAL_OFF)
-        setRelayState(relayIndex, RELAY_OFF_STATE);
-    else
-        restoreSingleRelayFromCurrentMode(relayIndex, now);
-
-    appendEventLog(now, "Relay " + String(relayIndex + 1) + " mode " + String(relayModeLabel(mode)) + "; state " + relayStateText(getRelayState(relayIndex)));
+    int currentMinsPastMidnight = (now.hour() * 60) + now.minute();
+    bool canUseAutomation = isAutomationEnabled() && schedule.loaded && isRtcTimeSane(now);
+    changeRelayMode(relayIndex, mode, currentMinsPastMidnight, schedule.prayerMins, now, canUseAutomation, "web");
     webServer->send(200, "text/plain", relayStateText(getRelayState(relayIndex)));
 }
 
@@ -422,6 +409,64 @@ String textField(const char *label, const char *name, const String &value, const
     return "<label class='field'>" + String(label) + "<input type='" + type + "' name='" + name + "' value='" + escapeHtml(value) + "' placeholder='" + placeholder + "'></label>";
 }
 
+String thingsBoardStatusHtml()
+{
+    if (isThingsBoardConnected())
+        return "status-ok'>Connected";
+    return isThingsBoardStarted() ? "status-bad'>Not connected" : "status-bad'>Not configured";
+}
+
+void sendThingsBoardForm()
+{
+    ThingsBoardSettings saved = loadThingsBoardSettings();
+    String form = "<form method='POST' action='/thingsboard' class='card upload-row'><h2>ThingsBoard</h2>";
+    form += "<p class='note'>Copy the access token from the device page in ThingsBoard. Leave it empty to turn the link off.";
+    if (isThingsBoardStarted())
+        form += " Saving restarts the board; relays go OFF for about 10 seconds.";
+    form += "</p>";
+    form += textField("Device access token", "token", "", "password", saved.token.length() ? "(unchanged)" : "");
+    form += textField("MQTT host", "host", saved.host);
+    form += textField("MQTT port", "port", String(saved.port), "number");
+    form += "<label class='field'><span><input type='checkbox' name='tls' value='1'" + String(saved.useTls ? " checked" : "") + "> TLS (port 8883)</span></label>";
+    form += textField("Firmware update host (plain HTTP)", "http_host", saved.httpHost);
+    form += textField("Firmware update port", "http_port", String(saved.httpPort), "number");
+    form += "<label class='field'><span><input type='checkbox' name='clear_token' value='1'> Remove saved token</span></label>";
+    form += "<input type='submit' class='btn' value='Save ThingsBoard Settings'></form>";
+    webServer->sendContent(form);
+}
+
+void handleThingsBoardSave()
+{
+    ThingsBoardSettings settings = loadThingsBoardSettings();
+    String token = webServer->arg("token");
+    token.trim();
+    if (webServer->hasArg("clear_token"))
+        settings.token = "";
+    else if (token.length() > 0)
+        settings.token = token;
+
+    String host = webServer->arg("host");
+    String httpHost = webServer->arg("http_host");
+    host.trim();
+    httpHost.trim();
+    long port = webServer->arg("port").toInt();
+    long httpPort = webServer->arg("http_port").toInt();
+    if (host.length() > 0)
+        settings.host = host;
+    if (httpHost.length() > 0)
+        settings.httpHost = httpHost;
+    if (port > 0 && port <= 65535)
+        settings.port = port;
+    if (httpPort > 0 && httpPort <= 65535)
+        settings.httpPort = httpPort;
+    settings.useTls = webServer->hasArg("tls");
+
+    saveThingsBoardSettings(settings);
+    appendEventLog(clockRtc->now(), settings.token.length() ? "ThingsBoard settings saved for " + settings.host : String("ThingsBoard link turned off"));
+    requestThingsBoardReconfigure();
+    redirectTo("/network?tb_saved=1");
+}
+
 void sendNetworkStatusCard(const NetworkSettings &saved)
 {
     NetworkStatus net = getNetworkStatus();
@@ -432,6 +477,7 @@ void sendNetworkStatusCard(const NetworkSettings &saved)
         card += "<div class='status-line'>WiFi <span class='status-bad'>" + String(saved.ssid.length() ? "Not connected" : "Not configured") + "</span></div>";
     card += "<div class='status-line'>Setup AP <span class='status-ok'>" + String(AP_SSID) + " - " + net.apIp + " (" + String(net.apClients) + " connected)</span></div>";
     card += "<div class='status-line'>NTP <span class='" + String(hasNtpSynced() ? "status-ok'>Synced" : "status-bad'>Waiting") + "</span></div>";
+    card += "<div class='status-line'>ThingsBoard <span class='" + thingsBoardStatusHtml() + "</span></div>";
     if (net.wifiConnected)
         card += "<p class='note'>On your network: http://" + net.ip + " or http://" + String(NETWORK_HOSTNAME) + ".local</p>";
     card += "</div>";
@@ -453,6 +499,8 @@ void handleNetworkPage()
         webServer->sendContent("<div class='card status-bad'>Static IP, gateway and subnet (and DNS, if set) must be valid IPv4 addresses.</div>");
     else if (webServer->hasArg("saved"))
         webServer->sendContent("<div class='card status-ok'>Saved. Joining the network...</div>");
+    else if (webServer->hasArg("tb_saved"))
+        webServer->sendContent("<div class='card status-ok'>ThingsBoard settings saved.</div>");
 
     String form = "<form method='POST' action='/network' class='card upload-row'><h2>WiFi Network</h2>";
     form += "<p class='note'>The setup AP stays on either way. Leave the network name empty to run AP only.</p>";
@@ -466,6 +514,7 @@ void handleNetworkPage()
     form += "<input type='submit' class='btn' value='Save and Connect'>";
     form += "<a class='btn btn-light' href='/' style='text-align:center;text-decoration:none;line-height:24px'>Back</a></form>";
     webServer->sendContent(form);
+    sendThingsBoardForm();
 
     webServer->sendContent("</div></body></html>");
     webServer->sendContent("");
@@ -520,5 +569,6 @@ void configureWebServer(WebServer &server, RTC_DS3231 &rtc, bool *automationEnab
     server.on("/upload", HTTP_POST, handleUploadSuccess, handleFileUpload);
     server.on("/network", HTTP_GET, handleNetworkPage);
     server.on("/network", HTTP_POST, handleNetworkSave);
+    server.on("/thingsboard", HTTP_POST, handleThingsBoardSave);
 }
 

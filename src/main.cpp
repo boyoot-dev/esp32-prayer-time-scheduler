@@ -10,12 +10,16 @@
 #include "net.h"
 #include "relay_rules.h"
 #include "schedule_manager.h"
+#include "thingsboard_link.h"
 #include "time_safety.h"
 #include "web_ui.h"
+
+constexpr unsigned long STATE_REPORT_INTERVAL_MS = 250;
 
 RTC_DS3231 rtc;
 WebServer server(80);
 bool automationEnabled = false;
+bool rtcSane = false;
 
 bool isEgyptDST(int month, int day)
 {
@@ -123,6 +127,35 @@ void loadScheduleForDate(const DateTime &now, bool restoreRelays)
     }
 }
 
+void handleRemoteCommand(const RemoteCommand &command)
+{
+    DateTime now = rtc.now();
+    int currentMinsPastMidnight = (now.hour() * 60) + now.minute();
+    bool canUseAutomation = automationEnabled && schedule.loaded && isRtcTimeSane(now);
+
+    switch (command.type)
+    {
+    case REMOTE_SET_RELAY_MODE:
+        changeRelayMode(command.relayIndex, static_cast<RelayMode>(command.mode), currentMinsPastMidnight, schedule.prayerMins, now, canUseAutomation, "ThingsBoard");
+        break;
+    }
+}
+
+void reportCurrentState()
+{
+    DeviceState state = {};
+    for (int r = 0; r < RELAY_COUNT; r++)
+    {
+        state.relayOn[r] = getRelayState(r) == RELAY_ON_STATE;
+        state.relayMode[r] = getRelayMode(r);
+    }
+    state.rtcOk = rtcSane;
+    state.scheduleLoaded = schedule.loaded;
+    state.automationEnabled = automationEnabled && schedule.loaded && rtcSane;
+    for (int p = 0; p < PRAYER_COUNT; p++)
+        state.prayerMins[p] = schedule.prayerMins[p];
+    reportDeviceState(state);
+}
 
 void setup()
 {
@@ -151,6 +184,7 @@ void setup()
 
     automationEnabled = initializeRtc();
     DateTime now = rtc.now();
+    rtcSane = automationEnabled;
     if (automationEnabled)
     {
         setSystemClockFromRtc(now);
@@ -173,6 +207,17 @@ void loop()
     server.handleClient();
     feedWatchdog();
 
+    RemoteCommand command;
+    while (takeRemoteCommand(command))
+        handleRemoteCommand(command);
+
+    static unsigned long lastReport = 0;
+    if (millis() - lastReport >= STATE_REPORT_INTERVAL_MS)
+    {
+        lastReport = millis();
+        reportCurrentState();
+    }
+
     static unsigned long lastCheck = 0;
     if (millis() - lastCheck < 1000)
         return;
@@ -193,10 +238,12 @@ void loop()
         }
     }
 
+    rtcSane = isRtcTimeSane(now);
     static bool loggedInvalidRtc = false;
-    if (!isRtcTimeSane(now))
+    if (!rtcSane)
     {
-        if (!loggedInvalidRtc)
+        // Also catches a time sync that re-enabled automation while the RTC is unreadable.
+        if (!loggedInvalidRtc || automationEnabled)
         {
             loggedInvalidRtc = true;
             automationEnabled = false;
