@@ -124,9 +124,38 @@ void sendPageHeader()
                 var btn = document.getElementById('modeBtn' + i + '_' + m);
                 if(btn) btn.classList.toggle('active', m === relay.mode);
             }
-            // Never replace rules being edited here; just say they changed.
-            if(window.pageRules && relay.rules !== window.pageRules[i])
-                document.getElementById('rulesNotice' + i).hidden = false;
+            if(window.pageRules && relay.rules !== window.pageRules[i]) {
+                // Refresh the table unless it has unsaved edits; never discard those.
+                if(localRulesText(i) === window.pageRules[i]) {
+                    showRules(i, relay.rules);
+                    window.pageRules[i] = relay.rules;
+                } else {
+                    document.getElementById('rulesNotice' + i).hidden = false;
+                }
+            }
+        });
+    }
+    // The table in the device's compact rules text ("1+10:1;1+20:0"), in slot order as
+    // Save would store it. Form state values: 0 = ON (active-low LOW), 1 = OFF.
+    function localRulesText(relayIdx) {
+        var parts = [];
+        for(var slot = 0; slot < 10; slot++) {
+            var id = 'r' + relayIdx + 'i' + slot;
+            if(!document.getElementById(id + '_tr')) continue;
+            var p = document.getElementsByName(id + '_p')[0].value;
+            var o = parseInt(document.getElementsByName(id + '_o')[0].value, 10) || 0;
+            var s = document.getElementsByName(id + '_s')[0].value;
+            parts.push(p + (o >= 0 ? '+' : '') + o + ':' + (s == 0 ? 1 : 0));
+        }
+        return parts.join(';');
+    }
+    function showRules(relayIdx, text) {
+        var table = document.getElementById('ruleTable' + relayIdx);
+        while(table.rows.length) table.deleteRow(0);
+        if(!text) return;
+        text.split(';').forEach(function(part) {
+            var m = /^(\d)([+-]\d+):([01])$/.exec(part);
+            if(m) addRuleRow(relayIdx, Number(m[1]), Number(m[2]), m[3] === '1' ? 0 : 1);
         });
     }
     function pollStatus() {
@@ -263,7 +292,7 @@ void sendRelayCards()
         card += "<button type='button' id='modeBtn" + String(r) + "_1' class='btn btn-green" + String(mode == RELAY_MODE_MANUAL_ON ? " active" : "") + "' onclick='setRelayMode(" + String(r) + ",1)'>ON</button>";
         card += "<button type='button' id='modeBtn" + String(r) + "_2' class='btn btn-red" + String(mode == RELAY_MODE_MANUAL_OFF ? " active" : "") + "' onclick='setRelayMode(" + String(r) + ",2)'>OFF</button>";
         card += "</div>";
-        card += "<div id='rulesNotice" + String(r) + "' class='rules-notice' hidden>Rules were changed from ThingsBoard. <a href='/'>Reload</a> to see them; saving here first would overwrite them.</div>";
+        card += "<div id='rulesNotice" + String(r) + "' class='rules-notice' hidden>Rules were changed from ThingsBoard while you were editing. <a href='/'>Reload</a> to see them; saving here would overwrite them.</div>";
         card += "<table class='rules-table' id='ruleTable" + String(r) + "'></table>";
         card += "<button type='button' class='btn btn-secondary' onclick='addRuleRow(" + String(r) + ",0,0,0)'>Add Rule</button>";
         card += "</div>";

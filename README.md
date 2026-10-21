@@ -298,7 +298,7 @@ Routes are registered in `configureWebServer()` in [src/web_ui.cpp](src/web_ui.c
 
 Password and token fields are never sent back to the browser. Leaving them blank keeps the saved value; for WiFi, only while the network name is unchanged.
 
-The main page updates relay modes and ON/OFF badges live from `/status`, so changes made from ThingsBoard appear within 3 s. If a relay's rules change elsewhere while the page is open, the page shows a "reload" notice on that relay instead of replacing its rule table, so unsaved local edits are never overwritten silently. Saving the old table would still overwrite the newer rules.
+The main page updates relay modes and ON/OFF badges live from `/status`, so changes made from ThingsBoard appear within 3 s. Rules changed elsewhere also refresh live, unless that relay's rule table has unsaved local edits (it no longer matches what the page loaded). In that case the page shows a "reload" notice on that relay instead of discarding the edits. Saving the edited table would still overwrite the newer rules.
 
 The page is streamed in chunks (`sendContent`) to keep RAM use low. Arduino's `WebServer` handles one client at a time, so a phone holding an idle connection open can delay other requests by a few seconds.
 
