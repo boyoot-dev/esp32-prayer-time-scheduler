@@ -1,338 +1,138 @@
 # Prayer Automation Hub
 
+Terse technical reference. [README.md](README.md) has the reasoning behind each item; if the two disagree, trust the code.
+
 ## Overview
 
-Prayer Automation Hub is an ESP32-based relay automation controller for switching pumps or similar loads according to daily prayer-time schedules.
+ESP32 relay controller that switches pumps or similar loads around the five daily prayer times. Automation runs entirely on the device from a DS3231 RTC and an uploaded CSV calendar. A self-hosted ThingsBoard server (via TbLink) is an optional remote panel.
 
-The device runs as a standalone WiFi access point, hosts a local web UI at `192.168.4.1`, reads time from a DS3231 RTC module, stores configuration in LittleFS flash storage, and controls four active-low relay outputs.
+## Hardware
 
-The project is designed for local operation without internet access. A user connects to the ESP32 access point, uploads a schedule CSV, configures relay rules, and can manually override each relay when needed.
+- ESP32 Dev Module, Arduino-ESP32 2.0.17 via PlatformIO
+- DS3231 RTC on I²C (SDA 21, SCL 22), Adafruit RTClib 2.1.4; optional when NTP is available
+- 4 active-low relays: GPIO 2, 4, 5, 18 (`LOW` = ON)
+- Flash: `min_spiffs.csv` partition table (2 × 1.9 MB app slots, 128 KB LittleFS), NVS for settings
 
-## Hardware Target
-
-- Board: ESP32 Dev Module
-- Framework: Arduino via PlatformIO
-- RTC: DS3231, using Adafruit RTClib
-- Storage: ESP32 LittleFS
-- Relay outputs: 4 active-low GPIO outputs
-- Default relay pins:
-  - Relay 1: GPIO 2
-  - Relay 2: GPIO 4
-  - Relay 3: GPIO 5
-  - Relay 4: GPIO 18
-
-Active-low relay behavior:
-
-- `LOW` means relay ON
-- `HIGH` means relay OFF
-
-## PlatformIO Configuration
-
-The firmware is configured in `platformio.ini`:
+## PlatformIO
 
 ```ini
-[env:esp32dev]
-platform = espressif32
-board = esp32dev
-framework = arduino
-monitor_speed = 115200
-upload_port = COM3
-monitor_port = COM3
-lib_deps = adafruit/RTClib @ 2.1.4
-upload_speed = 115200
+lib_deps =
+    adafruit/RTClib @ 2.1.4
+    knolleary/PubSubClient @ ^2.8
+    bblanchon/ArduinoJson @ ^6.21.3
+    https://github.com/boyoot-dev/thingsboard-link.git#2b9748f
 board_build.filesystem = littlefs
+board_build.partitions = min_spiffs.csv
 ```
 
-## Network Behavior
+Upload/monitor on `COM3`, 115200. Switching a board from the default partition table loses its LittleFS files once.
 
-On boot, the ESP32 starts a WiFi SoftAP:
+## Task layout
 
-- SSID: `PrayerTimer-Setup`
-- Password: `password123`
-- Web UI address: `http://192.168.4.1`
+| Core | Task | Owns |
+|---|---|---|
+| 1 | Arduino `loop()` | Relays, modes, rules, schedule, RTC, LittleFS, local web server |
+| 0 | `network` (prio 1, 8 KB stack) | WiFi station, gateway pings, TbLink (MQTT/TLS/OTA) |
 
-The web UI is served from the ESP32 itself using Arduino `WebServer`.
+Cross-core only through: `DeviceState` snapshot (250 ms, spinlock), rules-text snapshot, event queue (16), command queue (8), NTP-sync flag. Only the network task touches the MQTT client.
 
-## Core Features
+## Network
 
-### Prayer-Time Schedule Automation
+- AP `PrayerTimer-Setup` / `password123` at `192.168.4.1`, always on
+- WiFi station from NVS settings; retry 15 s (2 min while AP has clients); hostname `prayertimer.local`
+- Link watchdog: while ThingsBoard is down, ping gateway every 60 s, rejoin WiFi after 2 failures; never reboots
 
-The firmware reads `/schedule.csv` from LittleFS and loads the entry matching the current RTC month and day.
+## Time
 
-Each schedule row is expected to provide:
+- RTC keeps Egypt standard time (UTC+2) all year; system clock keeps UTC
+- `currentTime()`: sane RTC, else system clock once NTP or a browser sync has set it
+- NTP correction applied when drift ≥ 2 s or automation is off; browser sync on every page load
+- Sane RTC: year 2024–2035, DS3231 not reporting lost power
+- Egypt DST window hard-coded in the browser sync JS (and the compile-time fallback)
 
-- Month
-- Day
-- Fajr time in minutes past midnight
-- Dhuhr time in minutes past midnight
-- Asr time in minutes past midnight
-- Maghrib time in minutes past midnight
-- Isha time in minutes past midnight
+## Automation
 
-The loaded schedule is stored in memory as five prayer times.
+- `/schedule.csv`: `month,day,fajr,dhuhr,asr,maghrib,isha` (minutes past midnight), matched by month/day
+- Up to 10 rules per relay: prayer + offset (±1439 min) → ON/OFF; one-shot state changes, not durations
+- Minute tick fires exact matches for AUTO relays; `computeAutoRelayStateAtTime()` reconstructs state on boot, rollover, upload, rule save, mode change, time sync
+- Modes: AUTO (follows rules; OFF without trusted time + schedule), MANUAL ON, MANUAL OFF (always apply, survive reboot)
 
-### Relay Rules
+## ThingsBoard
 
-Each relay can have up to 10 automation rules.
+- MQTT `mqtt.iot.boyoot.dev:8883` TLS (ISRG Root X1); waits for a valid clock before connecting
+- OTA download `iot.boyoot.dev:80` plain HTTP (checksum verified); title `prayer-timer`, version `FW_VERSION`
+- OTA installs only when all relays are OFF and no AUTO rule is due within 15 min; `fw_waiting` shows a held update
+- Firmware assignment re-requested every 30 min
 
-A rule contains:
+Telemetry: `relay1..4_state`, `relay1..4_mode` (`auto|on|off`), `rtc_ok`, `schedule_loaded`, `automation_enabled`, `event`, `heartbeat` (8 s), `current_fw_title`, `current_fw_version`
 
-- Prayer index: Fajr, Dhuhr, Asr, Maghrib, or Isha
-- Offset in minutes
-- Target state: ON or OFF
+Attributes: `fajr..isha` (`HH:MM`), `relay1..4_rules`, `ip`, `rssi`, `uptime_s`, `fw_waiting`
 
-Example:
+RPC:
 
-- Relay 3
-- `Turn ON`
-- `10 min`
-- `Dhuhr`
+| Method | Params |
+|---|---|
+| `set_relay_mode` | `{"relay": 1-4, "mode": "auto"\|"on"\|"off"}` |
+| `set_rules` | `{"relay": 1-4, "rules": "1+10:1;1+20:0"}` |
+| `reboot` | `{}` |
 
-This means Relay 3 turns ON 10 minutes after Dhuhr and remains ON until another rule turns it OFF.
+Rules text: `<prayer 0-4><+/-offset>:<1|0>` joined by `;` (fits TbLink's 128-byte publish buffer).
 
-Important behavior:
+Dashboard widget: [thingsboard/control-panel/](thingsboard/control-panel/).
 
-Rules are state-change commands, not durations. If a relay has only an ON rule and no later OFF rule, it will remain ON after that rule has passed.
+## Local HTTP routes
 
-### AUTO / Manual Override Modes
+| Method | Path | Purpose |
+|---|---|---|
+| `GET`/`POST` | `/` | Main page / save all rules (`save_rules`) |
+| `GET` | `/relay` | `relay` 0–3, `mode` 0–2 |
+| `GET` | `/status` | Relay modes, states, rules as JSON (polled every 3 s) |
+| `GET` | `/time-sync` | `y, mo, d, h, mi, s` |
+| `POST` | `/upload` | Schedule CSV (field `update`) |
+| `GET`/`POST` | `/network` | Network status / save WiFi settings |
+| `POST` | `/thingsboard` | Save ThingsBoard settings (restarts if already connected) |
 
-Each relay has a persistent mode:
+No authentication on any route.
 
-- `AUTO`
-- `MANUAL ON`
-- `MANUAL OFF`
+## Storage
 
-In `AUTO`, the relay follows schedule rules.
+| Where | Item |
+|---|---|
+| LittleFS `/schedule.csv` | Uploaded calendar |
+| LittleFS `/rules.bin` | Raw `relayRules` array, unversioned |
+| LittleFS `/relay_state.bin` | Modes + states, magic `0x50545231`, version 1 |
+| LittleFS `/events.log` | Last 100 events |
+| NVS `network` | `ssid`, `pass`, `static`, `ip`, `gw`, `mask`, `dns` |
+| NVS `thingsboard` | `token`, `host`, `port`, `tls`, `http_host`, `http_port` |
 
-In `MANUAL ON`, the relay is forced ON and automation skips that relay.
+## Safety
 
-In `MANUAL OFF`, the relay is forced OFF and automation skips that relay.
+- Relays OFF at pin setup; 10 s startup delay before restoring any state
+- AUTO only with trusted time and today's schedule; manual modes always apply
+- Task watchdog 30 s (covers a TLS handshake)
+- Network problems never reboot the board or change relays
+- OTA waits for idle relays
+- Event log (flash + ThingsBoard) records every relay change with its cause and source
 
-Manual modes are saved in flash, so they survive reboot.
+## Modules
 
-### Startup Safety Delay
-
-At startup, all relay pins are immediately configured and held OFF.
-
-The firmware waits for `STARTUP_SAFE_DELAY_MS`, currently 10 seconds, before restoring any relay state or applying automation.
-
-This reduces relay chatter during power recovery.
-
-### RTC Sanity Check
-
-Automation is disabled if the RTC is not safe to trust.
-
-The firmware checks:
-
-- RTC device must be present
-- DS3231 must not report lost power
-- Year must be within the configured sane range
-
-Current sane RTC range:
-
-- Minimum year: 2024
-- Maximum year: 2035
-
-If the RTC is invalid, relays are held OFF and automation stays disabled until a valid browser time sync occurs.
-
-### Browser Time Sync
-
-When the web UI loads, the browser sends the current local time to `/time-sync`.
-
-The firmware adjusts the DS3231 RTC from that browser-provided time if the submitted values pass validation.
-
-The UI includes Egypt daylight-saving handling and syncs the RTC to UTC+2 standard time.
-
-### Relay State Restoration
-
-On boot or mode changes, the firmware restores relay outputs based on mode:
-
-- Manual ON restores ON
-- Manual OFF restores OFF
-- AUTO calculates the intended state from today's schedule and all rules up to the current minute
-
-This prevents missed schedule events after power loss.
-
-Example:
-
-If Relay 1 had an ON rule at 15:20 and the ESP32 reboots at 15:21, AUTO mode can infer that Relay 1 should already be ON.
-
-### Watchdog
-
-The ESP32 task watchdog is enabled with a 15-second timeout.
-
-The main loop feeds the watchdog before and after web-server handling. The startup safety delay also feeds the watchdog while waiting.
-
-If firmware execution hangs long enough, the ESP32 will reboot automatically.
-
-### Event Log
-
-The firmware maintains a capped event log in LittleFS.
-
-Log file:
-
-- `/events.log`
-
-Maximum entries:
-
-- 100
-
-Logged events include:
-
-- Boot
-- RTC ready
-- RTC missing, invalid, or lost power
-- Schedule loaded or missing
-- Browser time sync
-- Schedule CSV upload
-- Automation rule saves
-- Relay mode changes
-- Relay ON/OFF changes caused by automation or restore logic
-
-The event log is displayed in the web UI for troubleshooting.
-
-## Web UI Features
-
-The local web UI provides:
-
-- Live clock display
-- Current date
-- RTC status
-- Schedule file status
-- Automation enabled/disabled status
-- Today's prayer times
-- Schedule CSV upload
-- Per-relay mode controls:
-  - AUTO
-  - ON
-  - OFF
-- Per-relay automation rule editor
-- Save automation rules button
-- Event log viewer
-
-## Firmware Modules
-
-### `src/main.cpp`
-
-Responsible for:
-
-- System boot flow
-- LittleFS startup
-- Relay safe startup
-- Watchdog setup and feeding
-- RTC initialization and sanity checks
-- Schedule loading
-- Main automation loop
-- Web server startup
-
-### `src/relay_rules.cpp`
-
-Responsible for:
-
-- Relay pin setup
-- Relay ON/OFF state control
-- Active-low relay normalization
-- Relay rule storage
-- Relay mode persistence
-- AUTO state calculation
-- Manual override behavior
-- Scheduled relay changes
-
-### `src/schedule_manager.cpp`
-
-Responsible for:
-
-- Loading `/schedule.csv`
-- Finding today's schedule row
-- Converting prayer minutes to display text
-
-### `src/web_ui.cpp`
-
-Responsible for:
-
-- Rendering the local HTML/CSS/JavaScript UI
-- Handling rule-save requests
-- Handling relay mode changes
-- Handling browser time sync
-- Handling schedule CSV upload
-- Showing system status and event log
-
-### `src/event_log.cpp`
-
-Responsible for:
-
-- Appending events to `/events.log`
-- Keeping only the latest 100 entries
-- Reading the log for display in the web UI
-
-### `src/time_safety.cpp`
-
-Responsible for:
-
-- RTC sanity validation
-- Timestamp formatting for logs
-
-## LittleFS Files
-
-The firmware uses these files in ESP32 flash:
-
-- `/schedule.csv`: uploaded prayer-time calendar
-- `/rules.bin`: saved relay automation rules
-- `/relay_state.bin`: saved relay modes and last known relay states
-- `/events.log`: capped troubleshooting event log
-
-## Safety Design
-
-The firmware is intentionally conservative:
-
-- Relays default OFF during boot
-- Startup delay prevents immediate relay switching during unstable power recovery
-- Automation is blocked if RTC time is not sane
-- Automation is blocked if today's schedule is missing
-- Manual override modes take priority over schedule automation
-- AUTO mode reconstructs expected relay state after reboot
-- Watchdog recovers from software hangs
-- Event log records key state transitions for troubleshooting
-
-## Important Operational Notes
-
-Relay rules are persistent state changes. For pump-style operation, every ON rule should usually have a matching OFF rule.
-
-Example 10-minute pump run after Dhuhr:
-
-- `Turn ON`, `10 min`, `Dhuhr`
-- `Turn OFF`, `20 min`, `Dhuhr`
-
-If only the ON rule exists, the relay will remain ON until another rule or manual command turns it OFF.
-
-## Build Command
-
-From the project root:
+| File | Responsibility |
+|---|---|
+| `src/main.cpp` | Boot, loop, remote command handling, state snapshot |
+| `src/relay_rules.cpp` | Relay I/O, modes, rules, persistence, AUTO logic, rules text |
+| `src/schedule_manager.cpp` | CSV parsing |
+| `src/clock_sync.cpp` | `currentTime()`, RTC/system clock, NTP, `applyClockSync()` |
+| `src/net.cpp` | Network task, WiFi, link watchdog |
+| `src/network_settings.cpp` | WiFi + ThingsBoard settings in NVS |
+| `src/thingsboard_link.cpp` | TbLink, publishing, RPC, events, OTA gate |
+| `src/web_ui.cpp` | Local web UI and HTTP handlers |
+| `src/event_log.cpp` | Capped log, forwarded to ThingsBoard |
+| `src/time_safety.cpp` | RTC sanity check, timestamp format |
+
+## Build
 
 ```powershell
 C:\Users\albedair\.platformio\penv\Scripts\pio.exe run
-```
-
-## Upload Command
-
-From the project root:
-
-```powershell
 C:\Users\albedair\.platformio\penv\Scripts\pio.exe run --target upload
-```
-
-## Serial Monitor
-
-```powershell
 C:\Users\albedair\.platformio\penv\Scripts\pio.exe device monitor
 ```
-
-Default monitor speed:
-
-- `115200`
-
-## Current Production Commit History
-
-- `00c01ab` - Initial production baseline
-- `89f9cf6` - `prod-2026-06-24-19-47`
-
