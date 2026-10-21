@@ -1,12 +1,13 @@
 #include <LittleFS.h>
 #include <RTClib.h>
 #include <WebServer.h>
-#include <WiFi.h>
 #include <Wire.h>
 #include <esp_task_wdt.h>
 
 #include "app_config.h"
+#include "clock_sync.h"
 #include "event_log.h"
+#include "net.h"
 #include "relay_rules.h"
 #include "schedule_manager.h"
 #include "time_safety.h"
@@ -151,13 +152,16 @@ void setup()
     automationEnabled = initializeRtc();
     DateTime now = rtc.now();
     if (automationEnabled)
+    {
+        setSystemClockFromRtc(now);
         loadScheduleForDate(now, true);
+    }
     else
+    {
         holdRelaysOff(now);
+    }
 
-    WiFi.softAP(WIFI_SSID, WIFI_PASSWORD);
-    Serial.print("SoftAP IP: ");
-    Serial.println(WiFi.softAPIP());
+    beginNetwork();
     configureWebServer(server, rtc, &automationEnabled);
     server.begin();
     Serial.println("Web server started");
@@ -175,6 +179,19 @@ void loop()
 
     lastCheck = millis();
     DateTime now = rtc.now();
+
+    DateTime ntpNow;
+    if (takeNtpSync(ntpNow) && isRtcTimeSane(ntpNow))
+    {
+        uint32_t rtcSec = now.unixtime();
+        uint32_t ntpSec = ntpNow.unixtime();
+        uint32_t driftSec = rtcSec > ntpSec ? rtcSec - ntpSec : ntpSec - rtcSec;
+        if (driftSec >= 2)
+        {
+            applyClockSync(rtc, automationEnabled, ntpNow, "NTP");
+            now = ntpNow;
+        }
+    }
 
     static bool loggedInvalidRtc = false;
     if (!isRtcTimeSane(now))

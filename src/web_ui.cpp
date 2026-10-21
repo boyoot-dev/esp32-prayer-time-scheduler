@@ -3,7 +3,10 @@
 #include <LittleFS.h>
 
 #include "app_config.h"
+#include "clock_sync.h"
 #include "event_log.h"
+#include "net.h"
+#include "network_settings.h"
 #include "relay_rules.h"
 #include "schedule_manager.h"
 #include "time_safety.h"
@@ -101,7 +104,7 @@ void sendPageHeader()
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Prayer Automation Hub</title>
     <style>
-        *{box-sizing:border-box} body{margin:0;font-family:Arial,sans-serif;background:#eef2f6;color:#111827;padding:14px;text-align:left} .app{max-width:560px;margin:0 auto 24px} h1{font-size:29px;line-height:1.08;margin:22px 4px 18px;text-align:center;letter-spacing:0} h2{font-size:21px;margin:0 0 14px} .card{background:#fff;border:1px solid #e7ecf2;border-radius:18px;box-shadow:0 8px 22px rgba(15,23,42,.08);padding:18px;margin:14px 0}.top-card{text-align:center}.date{font-size:15px;font-weight:700;color:#475569;margin-bottom:10px}.clock{font-size:34px;line-height:1;font-weight:800;color:#2563eb}.note{font-size:13px;color:#64748b;margin:8px 0 14px}.status-line{display:flex;justify-content:center;gap:8px;align-items:center;font-size:14px;font-weight:700;margin-top:8px}.status-ok{color:#15803d}.status-bad{color:#dc2626}.prayer-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:18px}.prayer-name{font-size:13px;color:#64748b;font-weight:800}.prayer-time{font-size:18px;font-weight:800;margin-top:5px}.upload-row{display:grid;gap:12px}.file-input{width:100%;font-size:15px}.btn{border:0;border-radius:12px;min-height:44px;padding:10px 12px;font-size:14px;font-weight:800;color:#fff;background:#2563eb;cursor:pointer}.btn.active{outline:3px solid rgba(37,99,235,.25)}.btn-secondary{background:#475569}.btn-green{background:#16a34a}.btn-red{background:#e11d48}.btn-light{background:#e2e8f0;color:#0f172a}.relay-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.relay-badges{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.relay-status{font-size:12px;font-weight:900;border-radius:999px;padding:6px 10px;background:#e2e8f0;color:#475569}.relay-status.on{background:#dcfce7;color:#15803d}.relay-status.off{background:#fee2e2;color:#be123c}.manual-controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}.rules-table,.rules-table tbody{display:block;width:100%}.rule-row{display:grid;grid-template-columns:1fr 86px 1fr 44px;gap:8px;align-items:end;padding:12px 0;border-top:1px solid #eef2f7}.rule-row td{display:block;padding:0}.rule-row select,.rule-row input{width:100%;height:42px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;padding:0 10px;font-size:15px}.offset-wrap{display:flex;align-items:center;gap:6px}.offset-wrap input{min-width:0}.unit{font-size:12px;color:#64748b;font-weight:800}.del-btn{width:42px;height:42px;border:0;border-radius:12px;background:#ef4444;color:#fff;font-size:20px;font-weight:800}.log-box{font-family:Consolas,monospace;font-size:12px;line-height:1.45;white-space:pre-wrap;max-height:260px;overflow:auto;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px;color:#334155}.save-card{position:sticky;bottom:10px;z-index:2;padding:12px;background:rgba(255,255,255,.94);backdrop-filter:blur(6px)}@media(min-width:520px){body{padding:22px}h1{font-size:34px}.card{padding:22px}.clock{font-size:38px}.prayer-time{font-size:20px}.rule-row{grid-template-columns:1fr 100px 1fr 48px}}
+        *{box-sizing:border-box} body{margin:0;font-family:Arial,sans-serif;background:#eef2f6;color:#111827;padding:14px;text-align:left} .app{max-width:560px;margin:0 auto 24px} h1{font-size:29px;line-height:1.08;margin:22px 4px 18px;text-align:center;letter-spacing:0} h2{font-size:21px;margin:0 0 14px} .card{background:#fff;border:1px solid #e7ecf2;border-radius:18px;box-shadow:0 8px 22px rgba(15,23,42,.08);padding:18px;margin:14px 0}.top-card{text-align:center}.date{font-size:15px;font-weight:700;color:#475569;margin-bottom:10px}.clock{font-size:34px;line-height:1;font-weight:800;color:#2563eb}.note{font-size:13px;color:#64748b;margin:8px 0 14px}.status-line{display:flex;justify-content:center;gap:8px;align-items:center;font-size:14px;font-weight:700;margin-top:8px}.status-ok{color:#15803d}.status-bad{color:#dc2626}.prayer-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:18px}.prayer-name{font-size:13px;color:#64748b;font-weight:800}.prayer-time{font-size:18px;font-weight:800;margin-top:5px}.upload-row{display:grid;gap:12px}.file-input{width:100%;font-size:15px}.btn{border:0;border-radius:12px;min-height:44px;padding:10px 12px;font-size:14px;font-weight:800;color:#fff;background:#2563eb;cursor:pointer}.btn.active{outline:3px solid rgba(37,99,235,.25)}.btn-secondary{background:#475569}.btn-green{background:#16a34a}.btn-red{background:#e11d48}.btn-light{background:#e2e8f0;color:#0f172a}.relay-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.relay-badges{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.relay-status{font-size:12px;font-weight:900;border-radius:999px;padding:6px 10px;background:#e2e8f0;color:#475569}.relay-status.on{background:#dcfce7;color:#15803d}.relay-status.off{background:#fee2e2;color:#be123c}.manual-controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}.rules-table,.rules-table tbody{display:block;width:100%}.rule-row{display:grid;grid-template-columns:1fr 86px 1fr 44px;gap:8px;align-items:end;padding:12px 0;border-top:1px solid #eef2f7}.rule-row td{display:block;padding:0}.rule-row select,.rule-row input{width:100%;height:42px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;padding:0 10px;font-size:15px}.offset-wrap{display:flex;align-items:center;gap:6px}.offset-wrap input{min-width:0}.unit{font-size:12px;color:#64748b;font-weight:800}.del-btn{width:42px;height:42px;border:0;border-radius:12px;background:#ef4444;color:#fff;font-size:20px;font-weight:800}.log-box{font-family:Consolas,monospace;font-size:12px;line-height:1.45;white-space:pre-wrap;max-height:260px;overflow:auto;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px;color:#334155}.field{display:grid;gap:4px;font-size:13px;font-weight:800;color:#475569}.field input{height:42px;border:1px solid #cbd5e1;border-radius:10px;padding:0 10px;font-size:15px}.save-card{position:sticky;bottom:10px;z-index:2;padding:12px;background:rgba(255,255,255,.94);backdrop-filter:blur(6px)}@media(min-width:520px){body{padding:22px}h1{font-size:34px}.card{padding:22px}.clock{font-size:38px}.prayer-time{font-size:20px}.rule-row{grid-template-columns:1fr 100px 1fr 48px}}
     </style>
     <script>
     function setRelayMode(relayIdx, mode) {
@@ -192,6 +195,8 @@ void sendClockCard(const DateTime &now)
     clockHtml += "<div class='status-line'>RTC <span class='" + String(rtcOk ? "status-ok'>Sane" : "status-bad'>Invalid") + "</span></div>";
     clockHtml += "<div class='status-line'>Calendar <span class='" + String(schedule.loaded ? "status-ok'>Synced" : "status-bad'>Missing file") + "</span></div>";
     clockHtml += "<div class='status-line'>Automation <span class='" + String(autoOk ? "status-ok'>Enabled" : "status-bad'>Disabled") + "</span></div>";
+    NetworkStatus net = getNetworkStatus();
+    clockHtml += "<div class='status-line'>WiFi <span class='" + String(net.wifiConnected ? "status-ok'>" + net.ip : "status-bad'>Not connected") + "</span> <a href='/network'>Settings</a></div>";
     webServer->sendContent(clockHtml);
 
     if (schedule.loaded)
@@ -367,27 +372,8 @@ void handleTimeSync()
         return;
     }
 
-    DateTime before = clockRtc->now();
     DateTime synced(year, month, day, hour, minute, second);
-    bool wasEnabled = isAutomationEnabled();
-    uint32_t beforeSec = before.unixtime();
-    uint32_t syncedSec = synced.unixtime();
-    uint32_t deltaSec = beforeSec > syncedSec ? beforeSec - syncedSec : syncedSec - beforeSec;
-
-    clockRtc->adjust(synced);
-
-    bool loaded = loadTodaySchedule(month, day);
-    if (automationEnabled != nullptr)
-        *automationEnabled = isRtcTimeSane(synced) && loaded;
-
-    if (isAutomationEnabled())
-        restoreAllRelaysFromCurrentModes(synced);
-    else
-        restoreRelayStatesForNow((synced.hour() * 60) + synced.minute(), schedule.prayerMins, synced, false);
-
-    if (!wasEnabled || deltaSec > 120)
-        appendEventLog(synced, String("Time synced from browser; automation ") + (isAutomationEnabled() ? "enabled" : "disabled"));
-
+    applyClockSync(*clockRtc, *automationEnabled, synced, "browser");
     webServer->send(200, "text/plain", "OK");
 }
 
@@ -424,6 +410,101 @@ void handleUploadSuccess()
     webServer->sendHeader("Location", "/");
     webServer->send(303, "text/html", "<html><body>Redirecting...</body></html>");
 }
+
+void redirectTo(const char *location)
+{
+    webServer->sendHeader("Location", location);
+    webServer->send(303, "text/html", "<html><body>Redirecting...</body></html>");
+}
+
+String textField(const char *label, const char *name, const String &value, const char *type = "text", const char *placeholder = "")
+{
+    return "<label class='field'>" + String(label) + "<input type='" + type + "' name='" + name + "' value='" + escapeHtml(value) + "' placeholder='" + placeholder + "'></label>";
+}
+
+void sendNetworkStatusCard(const NetworkSettings &saved)
+{
+    NetworkStatus net = getNetworkStatus();
+    String card = "<div class='card'><h2>Network Status</h2>";
+    if (net.wifiConnected)
+        card += "<div class='status-line'>WiFi <span class='status-ok'>" + escapeHtml(net.ssid) + " - " + net.ip + " (" + String(net.rssi) + " dBm)</span></div>";
+    else
+        card += "<div class='status-line'>WiFi <span class='status-bad'>" + String(saved.ssid.length() ? "Not connected" : "Not configured") + "</span></div>";
+    card += "<div class='status-line'>Setup AP <span class='status-ok'>" + String(AP_SSID) + " - " + net.apIp + " (" + String(net.apClients) + " connected)</span></div>";
+    card += "<div class='status-line'>NTP <span class='" + String(hasNtpSynced() ? "status-ok'>Synced" : "status-bad'>Waiting") + "</span></div>";
+    if (net.wifiConnected)
+        card += "<p class='note'>On your network: http://" + net.ip + " or http://" + String(NETWORK_HOSTNAME) + ".local</p>";
+    card += "</div>";
+    webServer->sendContent(card);
+}
+
+void handleNetworkPage()
+{
+    NetworkSettings saved = loadNetworkSettings();
+
+    webServer->sendHeader("Cache-Control", "no-cache");
+    webServer->setContentLength(CONTENT_LENGTH_UNKNOWN);
+    webServer->send(200, "text/html", "");
+
+    sendPageHeader();
+    sendNetworkStatusCard(saved);
+
+    if (webServer->hasArg("error"))
+        webServer->sendContent("<div class='card status-bad'>Static IP, gateway and subnet (and DNS, if set) must be valid IPv4 addresses.</div>");
+    else if (webServer->hasArg("saved"))
+        webServer->sendContent("<div class='card status-ok'>Saved. Joining the network...</div>");
+
+    String form = "<form method='POST' action='/network' class='card upload-row'><h2>WiFi Network</h2>";
+    form += "<p class='note'>The setup AP stays on either way. Leave the network name empty to run AP only.</p>";
+    form += textField("Network name (SSID)", "ssid", saved.ssid);
+    form += textField("Password", "password", "", "password", saved.password.length() ? "(unchanged)" : "");
+    form += "<label class='field'><span><input type='checkbox' name='static' value='1'" + String(saved.useStaticIp ? " checked" : "") + "> Static IP</span></label>";
+    form += textField("IP address", "ip", saved.ip, "text", "192.168.1.50");
+    form += textField("Gateway", "gateway", saved.gateway, "text", "192.168.1.1");
+    form += textField("Subnet mask", "subnet", saved.subnet, "text", "255.255.255.0");
+    form += textField("DNS (optional)", "dns", saved.dns, "text", "same as gateway");
+    form += "<input type='submit' class='btn' value='Save and Connect'>";
+    form += "<a class='btn btn-light' href='/' style='text-align:center;text-decoration:none;line-height:24px'>Back</a></form>";
+    webServer->sendContent(form);
+
+    webServer->sendContent("</div></body></html>");
+    webServer->sendContent("");
+}
+
+void handleNetworkSave()
+{
+    NetworkSettings saved = loadNetworkSettings();
+    NetworkSettings settings;
+    settings.ssid = webServer->arg("ssid");
+    settings.password = webServer->arg("password");
+    settings.useStaticIp = webServer->hasArg("static");
+    settings.ip = webServer->arg("ip");
+    settings.gateway = webServer->arg("gateway");
+    settings.subnet = webServer->arg("subnet");
+    settings.dns = webServer->arg("dns");
+    settings.ssid.trim();
+    settings.ip.trim();
+    settings.gateway.trim();
+    settings.subnet.trim();
+    settings.dns.trim();
+
+    // A blank password keeps the saved one, unless the network itself changed.
+    if (settings.password.length() == 0 && settings.ssid == saved.ssid)
+        settings.password = saved.password;
+
+    IPAddress check;
+    bool staticIpValid = check.fromString(settings.ip) && check.fromString(settings.gateway) && check.fromString(settings.subnet) && (settings.dns.length() == 0 || check.fromString(settings.dns));
+    if (settings.useStaticIp && !staticIpValid)
+    {
+        redirectTo("/network?error=1");
+        return;
+    }
+
+    saveNetworkSettings(settings);
+    appendEventLog(clockRtc->now(), settings.ssid.length() ? "WiFi settings saved for " + settings.ssid : String("WiFi settings cleared; AP only"));
+    requestNetworkReconnect();
+    redirectTo("/network?saved=1");
+}
 }
 
 void configureWebServer(WebServer &server, RTC_DS3231 &rtc, bool *automationEnabledFlag)
@@ -437,5 +518,7 @@ void configureWebServer(WebServer &server, RTC_DS3231 &rtc, bool *automationEnab
     server.on("/relay", HTTP_GET, handleRelayControl);
     server.on("/time-sync", HTTP_GET, handleTimeSync);
     server.on("/upload", HTTP_POST, handleUploadSuccess, handleFileUpload);
+    server.on("/network", HTTP_GET, handleNetworkPage);
+    server.on("/network", HTTP_POST, handleNetworkSave);
 }
 
