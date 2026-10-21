@@ -84,8 +84,9 @@ void saveRulesFromRequest()
 
     saveRulesToStorage();
     DateTime now = clockRtc->now();
-    appendEventLog(now, "Automation rules saved");
+    appendEventLog(now, "Automation rules saved (web)");
     restoreAllRelaysFromCurrentModes(now);
+    reportRelayRules();
 }
 
 void sendPageHeader()

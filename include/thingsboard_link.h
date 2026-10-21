@@ -3,10 +3,11 @@
 #include <Arduino.h>
 
 #include "app_config.h"
+#include "relay_rules.h"
 
 // ThingsBoard connection via TbLink. TbLink runs only in the network task (core 0); the
-// loop task (core 1) owns all relay/rule state and talks to it through the two calls
-// below, so neither core ever waits on the other.
+// loop task (core 1) owns all relay/rule state and talks to it through the "Loop task"
+// calls below (snapshots and queues), so neither core ever waits on the other.
 
 struct DeviceState
 {
@@ -16,22 +17,32 @@ struct DeviceState
     bool scheduleLoaded;
     bool automationEnabled;
     int prayerMins[PRAYER_COUNT]; // valid when scheduleLoaded
+    // All relays OFF and no AUTO rule due soon: a firmware update may restart the board.
+    bool safeToRestart;
 };
 
 enum RemoteCommandType : uint8_t
 {
-    REMOTE_SET_RELAY_MODE
+    REMOTE_SET_RELAY_MODE,
+    REMOTE_SET_RELAY_RULES
 };
 
 struct RemoteCommand
 {
     RemoteCommandType type;
     int8_t relayIndex;
-    uint8_t mode; // RelayMode
+    uint8_t mode;      // RelayMode, for REMOTE_SET_RELAY_MODE
+    uint8_t ruleCount; // for REMOTE_SET_RELAY_RULES
+    RelayRule rules[MAX_RULES];
 };
 
 // Loop task: hands the current state to the network task, which publishes what changed.
 void reportDeviceState(const DeviceState &state);
+// Loop task: call after rules change (from either side) to republish them.
+void reportRelayRules();
+// Loop task: queues an event-log message for the "event" telemetry key. Kept while
+// ThingsBoard is unreachable, up to a small backlog.
+void publishEvent(const String &message);
 // Loop task: returns the next command received from ThingsBoard, if any.
 bool takeRemoteCommand(RemoteCommand &command);
 

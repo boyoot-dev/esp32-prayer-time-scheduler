@@ -286,6 +286,92 @@ void loadRulesFromStorage()
     }
 }
 
+void setRelayRules(int relayIndex, const RelayRule rules[MAX_RULES], int count)
+{
+    if (relayIndex < 0 || relayIndex >= RELAY_COUNT)
+        return;
+
+    for (int i = 0; i < MAX_RULES; i++)
+    {
+        if (i < count)
+        {
+            relayRules[relayIndex][i] = rules[i];
+        }
+        else
+        {
+            relayRules[relayIndex][i].prayerIndex = -1;
+            relayRules[relayIndex][i].offsetMins = 0;
+            relayRules[relayIndex][i].targetState = RELAY_OFF_STATE;
+        }
+    }
+}
+
+bool hasAutoRuleWithin(int currentMinsPastMidnight, const int prayerTimes[PRAYER_COUNT], int windowMins)
+{
+    for (int r = 0; r < RELAY_COUNT; r++)
+    {
+        if (relayModes[r] != RELAY_MODE_AUTO)
+            continue;
+
+        for (int i = 0; i < MAX_RULES; i++)
+        {
+            RelayRule rule = relayRules[r][i];
+            if (!isValidRule(rule))
+                continue;
+
+            int minutesUntil = prayerTimes[rule.prayerIndex] + rule.offsetMins - currentMinsPastMidnight;
+            if (minutesUntil < 0)
+                minutesUntil += 1440;
+            if (minutesUntil <= windowMins)
+                return true;
+        }
+    }
+    return false;
+}
+
+void formatRelayRules(int relayIndex, char *out, size_t outSize)
+{
+    size_t used = 0;
+    out[0] = '\0';
+    for (int i = 0; i < MAX_RULES && relayIndex >= 0 && relayIndex < RELAY_COUNT; i++)
+    {
+        RelayRule rule = relayRules[relayIndex][i];
+        if (!isValidRule(rule))
+            continue;
+
+        int written = snprintf(out + used, outSize - used, "%s%d%+d:%d", used ? ";" : "", rule.prayerIndex, rule.offsetMins, normalizeRelayState(rule.targetState) == RELAY_ON_STATE ? 1 : 0);
+        if (written < 0 || used + written >= outSize)
+            break;
+        used += written;
+    }
+}
+
+bool parseRelayRules(const char *text, RelayRule rules[MAX_RULES], int &count)
+{
+    count = 0;
+    const char *p = text;
+    while (*p != '\0')
+    {
+        int prayer, offset, on, consumed = 0;
+        if (count >= MAX_RULES || sscanf(p, "%d%d:%d%n", &prayer, &offset, &on, &consumed) != 3)
+            return false;
+        if (prayer < 0 || prayer >= PRAYER_COUNT || offset < -1439 || offset > 1439 || (on != 0 && on != 1))
+            return false;
+
+        rules[count].prayerIndex = prayer;
+        rules[count].offsetMins = offset;
+        rules[count].targetState = on ? RELAY_ON_STATE : RELAY_OFF_STATE;
+        count++;
+
+        p += consumed;
+        if (*p == ';')
+            p++;
+        else if (*p != '\0')
+            return false;
+    }
+    return true;
+}
+
 void applyRelayRules(int currentMinsPastMidnight, const int prayerTimes[PRAYER_COUNT], const DateTime &now, bool automationEnabled)
 {
     if (!automationEnabled)

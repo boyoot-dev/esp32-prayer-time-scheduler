@@ -5,7 +5,11 @@ One ThingsBoard "HTML Card" widget for a whole Prayer Timer board:
 - Online/Offline (from the firmware's 8 s `heartbeat`) and RTC / Schedule / Automation chips
 - Today's prayer times
 - Each relay's live ON/OFF state and AUTO / ON / OFF mode buttons
-- Firmware version, IP, WiFi signal, uptime, and a Reboot button
+- Each relay's rules in plain words, with an editor (the same rules the board's local
+  page edits; whichever side saves last wins)
+- The last 10 event-log entries
+- Firmware version (plus any update waiting for the relays to go idle), IP, WiFi signal,
+  uptime, and a Reboot button
 
 ## Setup
 
@@ -24,21 +28,32 @@ Add one widget per board.
 | Button | RPC method | Params |
 |---|---|---|
 | AUTO / ON / OFF | `set_relay_mode` | `{"relay": 1-4, "mode": "auto"\|"on"\|"off"}` |
+| Rules → Save | `set_rules` | `{"relay": 1-4, "rules": "1+10:1;1+20:0"}` |
 | Reboot | `reboot` | `{}` |
 
-Both are two-way RPCs (`POST /api/plugins/rpc/twoway/{deviceId}`), so errors from the
-board, or no answer at all, show up as a message under the panel. A successful
-`set_relay_mode` only means the board queued the change. The button stays outlined until
-the matching `relayN_mode` telemetry arrives (up to 10 s), so the panel always shows what
-the board actually did. Reboot asks for confirmation first, because restarting switches
+All are two-way RPCs (`POST /api/plugins/rpc/twoway/{deviceId}`), so errors from the
+board, or no answer at all, show up as a message under the panel. A successful reply only
+means the board queued the change. The panel waits for the board to report the result
+(`relayN_mode` telemetry, or `relayN_rules` with exactly the text it sent) for up to 10 s,
+so it always shows what the board actually did.
+
+**Rules text** is `<prayer><+/-offset>:<1 on|0 off>` joined by `;`, prayers 0-4 =
+Fajr, Dhuhr, Asr, Maghrib, Isha. `1+10:1;1+20:0` = ON 10 min after Dhuhr, OFF 20 min
+after Dhuhr. Up to 10 rules per relay, offsets -1439..1439. It is this compact because
+TbLink publishes each attribute through a 128-byte buffer. Sending `""` clears a relay's
+rules. Reboot asks for confirmation first, because restarting switches
 every relay OFF for the 10 s startup safety delay.
 
 ## Telemetry and attributes it reads
 
 | Kind | Keys |
 |---|---|
-| Telemetry | `heartbeat`, `relay1_state`…`relay4_state`, `relay1_mode`…`relay4_mode`, `rtc_ok`, `schedule_loaded`, `automation_enabled`, `current_fw_version` |
-| Client attributes | `fajr`, `dhuhr`, `asr`, `maghrib`, `isha`, `ip`, `rssi`, `uptime_s` |
+| Telemetry | `heartbeat`, `relay1_state`…`relay4_state`, `relay1_mode`…`relay4_mode`, `rtc_ok`, `schedule_loaded`, `automation_enabled`, `current_fw_version`, `event` |
+| Client attributes | `fajr`, `dhuhr`, `asr`, `maghrib`, `isha`, `relay1_rules`…`relay4_rules`, `ip`, `rssi`, `uptime_s`, `fw_waiting` |
+
+The event list's first load uses the REST range query
+(`/api/plugins/telemetry/DEVICE/{id}/values/timeseries?keys=event&limit=10&orderBy=DESC`);
+new events then arrive over the WebSocket.
 
 These match what [src/thingsboard_link.cpp](../../src/thingsboard_link.cpp) publishes.
 

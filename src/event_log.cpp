@@ -3,6 +3,7 @@
 #include <LittleFS.h>
 
 #include "app_config.h"
+#include "thingsboard_link.h"
 #include "time_safety.h"
 
 namespace
@@ -61,14 +62,19 @@ void appendLine(const String &line)
 void appendEventLog(const String &message)
 {
     appendLine(String("BOOT - ") + message);
+    publishEvent(message);
 }
 
 void appendEventLog(const DateTime &time, const String &message)
 {
-    if (isRtcTimeSane(time))
-        appendLine(formatTimestamp(time) + " - " + message);
-    else
+    if (!isRtcTimeSane(time))
+    {
         appendEventLog(message);
+        return;
+    }
+
+    appendLine(formatTimestamp(time) + " - " + message);
+    publishEvent(message);
 }
 
 String readEventLog()

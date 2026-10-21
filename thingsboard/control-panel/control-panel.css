@@ -166,6 +166,123 @@
   outline-offset: 1px;
 }
 
+.pt-rules {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+.pt-rule {
+  padding: 1px 0;
+  color: var(--text);
+}
+.pt-rule.is-on::before,
+.pt-rule.is-off::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--red);
+}
+.pt-rule.is-on::before {
+  background: var(--green);
+}
+.pt-rules-edit,
+.pt-editor-actions button {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.pt-editor {
+  margin-top: 8px;
+}
+.pt-editor-row {
+  display: grid;
+  grid-template-columns: 1fr 64px 1fr 30px;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.pt-editor-row select,
+.pt-editor-row input {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+.pt-ed-delete {
+  border: 0;
+  border-radius: 6px;
+  background: #fee2e2;
+  color: var(--red);
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.pt-editor-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.pt-editor-actions .pt-editor-save {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+.pt-editor-actions .pt-editor-save:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.pt-events {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.pt-events-title {
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.pt-events-list {
+  max-height: 180px;
+  overflow: auto;
+  font-size: 12px;
+}
+.pt-event {
+  display: flex;
+  gap: 10px;
+  padding: 3px 0;
+  border-top: 1px solid #f1f5f9;
+}
+.pt-event-time {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pt-events-empty {
+  color: var(--muted);
+}
+.pt-fw-waiting {
+  color: #b45309;
+  font-weight: 600;
+}
+
 .pt-footer {
   display: flex;
   flex-wrap: wrap;

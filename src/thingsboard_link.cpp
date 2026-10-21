@@ -34,10 +34,24 @@ portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 DeviceState reportedState;
 bool reportedStateValid = false;
 
+portMUX_TYPE rulesMux = portMUX_INITIALIZER_UNLOCKED;
+char reportedRules[RELAY_COUNT][RULES_TEXT_MAX];
+uint32_t rulesVersion = 0;
+
+// {"event":"..."} has to fit TbLink's 128-byte publish buffer.
+constexpr size_t EVENT_TEXT_MAX = 96;
+constexpr int EVENT_BACKLOG = 16;
+struct EventText
+{
+    char text[EVENT_TEXT_MAX];
+};
+QueueHandle_t eventQueue = nullptr;
+
 // Network task only.
 bool useTls = false;
 bool wasConnected = false;
 bool loggedClockWait = false;
+uint32_t sentRulesVersion = 0;
 DeviceState sentState;
 unsigned long lastFullState = 0;
 unsigned long lastDeviceInfo = 0;
@@ -71,6 +85,16 @@ void scheduleRestart()
     restartPending = true;
 }
 
+// The loop task applies the command; the panel sees the result in telemetry/attributes.
+bool queueCommand(const RemoteCommand &command, JsonDocument &response)
+{
+    bool queued = xQueueSend(commandQueue, &command, 0) == pdTRUE;
+    response["success"] = queued;
+    if (!queued)
+        response["error"] = "busy, try again";
+    return true;
+}
+
 bool handleRpc(const String &method, JsonVariantConst params, JsonDocument &response)
 {
     if (method == "set_relay_mode")
@@ -84,12 +108,30 @@ bool handleRpc(const String &method, JsonVariantConst params, JsonDocument &resp
             return true;
         }
 
-        RemoteCommand command = {REMOTE_SET_RELAY_MODE, static_cast<int8_t>(relay - 1), static_cast<uint8_t>(mode)};
-        bool queued = xQueueSend(commandQueue, &command, 0) == pdTRUE;
-        response["success"] = queued;
-        if (!queued)
-            response["error"] = "busy, try again";
-        return true;
+        RemoteCommand command = {};
+        command.type = REMOTE_SET_RELAY_MODE;
+        command.relayIndex = relay - 1;
+        command.mode = mode;
+        return queueCommand(command, response);
+    }
+
+    if (method == "set_rules")
+    {
+        int relay = params["relay"] | 0;
+        const char *text = params["rules"] | (const char *)nullptr;
+        RemoteCommand command = {};
+        int count = 0;
+        if (relay < 1 || relay > RELAY_COUNT || text == nullptr || !parseRelayRules(text, command.rules, count))
+        {
+            response["success"] = false;
+            response["error"] = "expected {\"relay\": 1-4, \"rules\": \"1+10:1;1+20:0\"}, up to 10 rules";
+            return true;
+        }
+
+        command.type = REMOTE_SET_RELAY_RULES;
+        command.relayIndex = relay - 1;
+        command.ruleCount = count;
+        return queueCommand(command, response);
     }
 
     // Restarting turns every relay OFF for the startup safety delay.
@@ -154,6 +196,41 @@ void sendDeviceInfo()
     tb.sendAttribute("ip", WiFi.localIP().toString().c_str());
     tb.sendAttribute("rssi", static_cast<int>(WiFi.RSSI()));
     tb.sendAttribute("uptime_s", static_cast<int>(millis() / 1000));
+    tb.sendAttribute("fw_waiting", tb.pendingOtaVersion().c_str());
+}
+
+void sendRules(bool full)
+{
+    char rules[RELAY_COUNT][RULES_TEXT_MAX];
+    portENTER_CRITICAL(&rulesMux);
+    uint32_t version = rulesVersion;
+    memcpy(rules, reportedRules, sizeof(rules));
+    portEXIT_CRITICAL(&rulesMux);
+    if (version == 0 || (!full && version == sentRulesVersion))
+        return;
+
+    char key[16];
+    for (int r = 0; r < RELAY_COUNT; r++)
+    {
+        snprintf(key, sizeof(key), "relay%d_rules", r + 1);
+        tb.sendAttribute(key, rules[r]);
+    }
+    sentRulesVersion = version;
+}
+
+void sendEvents()
+{
+    EventText event;
+    while (eventQueue != nullptr && xQueueReceive(eventQueue, &event, 0) == pdTRUE)
+        tb.sendTelemetry("event", event.text);
+}
+
+bool safeToInstallUpdate()
+{
+    portENTER_CRITICAL(&stateMux);
+    bool safe = reportedStateValid && reportedState.safeToRestart;
+    portEXIT_CRITICAL(&stateMux);
+    return safe;
 }
 
 void publishState(unsigned long now, bool justConnected)
@@ -206,10 +283,9 @@ void startLink()
     ota.expected_fw_title = FW_TITLE;
 
     tb.onRpc(handleRpc);
-    // Installing an update restarts the board, which drops the relays; nothing installs
-    // until an install rule decides when that is safe.
-    tb.onOtaGate([]()
-                 { return false; });
+    // Installing an update restarts the board, which turns every relay OFF for the startup
+    // delay, so an assigned update waits until nothing is running or about to run.
+    tb.onOtaGate(safeToInstallUpdate);
     tb.onOtaResult([](bool success, const String &error)
                    {
                        if (!success)
@@ -228,6 +304,28 @@ void reportDeviceState(const DeviceState &state)
     reportedState = state;
     reportedStateValid = true;
     portEXIT_CRITICAL(&stateMux);
+}
+
+void reportRelayRules()
+{
+    char rules[RELAY_COUNT][RULES_TEXT_MAX];
+    for (int r = 0; r < RELAY_COUNT; r++)
+        formatRelayRules(r, rules[r], RULES_TEXT_MAX);
+
+    portENTER_CRITICAL(&rulesMux);
+    memcpy(reportedRules, rules, sizeof(rules));
+    rulesVersion++;
+    portEXIT_CRITICAL(&rulesMux);
+}
+
+void publishEvent(const String &message)
+{
+    if (eventQueue == nullptr)
+        eventQueue = xQueueCreate(EVENT_BACKLOG, sizeof(EventText));
+
+    EventText event;
+    strlcpy(event.text, message.c_str(), sizeof(event.text));
+    xQueueSend(eventQueue, &event, 0); // backlog full: drop this one
 }
 
 bool takeRemoteCommand(RemoteCommand &command)
@@ -291,6 +389,8 @@ void thingsBoardLoop(unsigned long now)
     bool justConnected = !wasConnected;
     wasConnected = true;
     publishState(now, justConnected);
+    sendRules(justConnected);
+    sendEvents();
     if (justConnected || now - lastDeviceInfo >= DEVICE_INFO_INTERVAL_MS)
     {
         lastDeviceInfo = now;

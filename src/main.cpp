@@ -15,11 +15,15 @@
 #include "web_ui.h"
 
 constexpr unsigned long STATE_REPORT_INTERVAL_MS = 250;
+// A firmware update restarts the board (relays OFF for the startup delay); it waits while
+// any relay is ON or an AUTO rule is due within this many minutes.
+constexpr int UPDATE_RULE_MARGIN_MINS = 15;
 
 RTC_DS3231 rtc;
 WebServer server(80);
 bool automationEnabled = false;
 bool rtcSane = false;
+int currentMinute = -1; // minutes past midnight from the last sane RTC reading
 
 bool isEgyptDST(int month, int day)
 {
@@ -137,22 +141,34 @@ void handleRemoteCommand(const RemoteCommand &command)
     case REMOTE_SET_RELAY_MODE:
         changeRelayMode(command.relayIndex, static_cast<RelayMode>(command.mode), currentMinsPastMidnight, schedule.prayerMins, now, canUseAutomation, "ThingsBoard");
         break;
+    case REMOTE_SET_RELAY_RULES:
+        setRelayRules(command.relayIndex, command.rules, command.ruleCount);
+        saveRulesToStorage();
+        appendEventLog(now, "Relay " + String(command.relayIndex + 1) + " rules saved (ThingsBoard)");
+        restoreRelayStatesForNow(currentMinsPastMidnight, schedule.prayerMins, now, canUseAutomation);
+        reportRelayRules();
+        break;
     }
 }
 
 void reportCurrentState()
 {
     DeviceState state = {};
+    bool anyRelayOn = false;
     for (int r = 0; r < RELAY_COUNT; r++)
     {
         state.relayOn[r] = getRelayState(r) == RELAY_ON_STATE;
         state.relayMode[r] = getRelayMode(r);
+        anyRelayOn = anyRelayOn || state.relayOn[r];
     }
     state.rtcOk = rtcSane;
     state.scheduleLoaded = schedule.loaded;
     state.automationEnabled = automationEnabled && schedule.loaded && rtcSane;
     for (int p = 0; p < PRAYER_COUNT; p++)
         state.prayerMins[p] = schedule.prayerMins[p];
+
+    bool ruleDueSoon = state.automationEnabled && currentMinute >= 0 && hasAutoRuleWithin(currentMinute, schedule.prayerMins, UPDATE_RULE_MARGIN_MINS);
+    state.safeToRestart = !anyRelayOn && !ruleDueSoon;
     reportDeviceState(state);
 }
 
@@ -180,6 +196,7 @@ void setup()
 
     loadRelaySettingsFromStorage();
     loadRulesFromStorage();
+    reportRelayRules();
 
     automationEnabled = initializeRtc();
     DateTime now = rtc.now();
@@ -238,6 +255,7 @@ void loop()
     }
 
     rtcSane = isRtcTimeSane(now);
+    currentMinute = rtcSane ? (now.hour() * 60) + now.minute() : -1;
     static bool loggedInvalidRtc = false;
     if (!rtcSane)
     {

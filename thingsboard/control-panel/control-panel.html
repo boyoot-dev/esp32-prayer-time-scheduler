@@ -30,8 +30,13 @@
 
   <div class="pt-relays"></div>
 
+  <div class="pt-events">
+    <div class="pt-events-title">Recent events</div>
+    <div class="pt-events-list"><div class="pt-events-empty">Loading…</div></div>
+  </div>
+
   <div class="pt-footer">
-    <span>Firmware <b data-field="current_fw_version">—</b></span>
+    <span>Firmware <b data-field="current_fw_version">—</b><b class="pt-fw-waiting" data-attr="fw_waiting"></b></span>
     <span>IP <b data-attr="ip">—</b></span>
     <span>WiFi <b data-attr="rssi">—</b></span>
     <span>Up <b data-attr="uptime_s">—</b></span>
@@ -67,11 +72,15 @@
   // telemetry point; give up waiting after this long.
   var PENDING_TIMEOUT_MS = 10000;
   var STATUS_KEYS = ['rtc_ok', 'schedule_loaded', 'automation_enabled'];
-  var ATTRIBUTE_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha', 'ip', 'rssi', 'uptime_s'];
+  var ATTRIBUTE_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha', 'ip', 'rssi', 'uptime_s', 'fw_waiting'];
+  var PRAYER_NAMES = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
+  var MAX_RULES = 10;
+  var EVENT_COUNT = 10;
 
   var statusEl = root.querySelector('.pt-status');
   var statusTextEl = root.querySelector('.pt-status-text');
   var relaysEl = root.querySelector('.pt-relays');
+  var eventsListEl = root.querySelector('.pt-events-list');
   var messageEl = root.querySelector('.pt-message');
   var rebootBtn = root.querySelector('.pt-reboot');
 
@@ -139,7 +148,14 @@
     el.innerHTML =
       '<div class="pt-relay-head"><span class="pt-relay-name">Relay ' + number + '</span>' +
       '<span class="pt-relay-state">—</span></div>' +
-      '<div class="pt-modes">' + buttons + '</div>';
+      '<div class="pt-modes">' + buttons + '</div>' +
+      '<div class="pt-rules"><div class="pt-rules-list">—</div>' +
+      '<button type="button" class="pt-rules-edit">Edit rules</button></div>' +
+      '<div class="pt-editor" hidden><div class="pt-editor-rows"></div>' +
+      '<div class="pt-editor-actions">' +
+      '<button type="button" class="pt-editor-add">+ Add rule</button>' +
+      '<button type="button" class="pt-editor-cancel">Cancel</button>' +
+      '<button type="button" class="pt-editor-save">Save</button></div></div>';
     relaysEl.appendChild(el);
 
     var relay = {
@@ -147,10 +163,18 @@
       el: el,
       stateEl: el.querySelector('.pt-relay-state'),
       modeButtons: el.querySelectorAll('.pt-mode'),
+      rulesListEl: el.querySelector('.pt-rules-list'),
+      editBtn: el.querySelector('.pt-rules-edit'),
+      editorEl: el.querySelector('.pt-editor'),
+      editorRowsEl: el.querySelector('.pt-editor-rows'),
+      saveBtn: el.querySelector('.pt-editor-save'),
       on: null,
       mode: null,
       pendingMode: null,
-      pendingTimer: null
+      pendingTimer: null,
+      rulesText: null,
+      pendingRules: null,
+      rulesTimer: null
     };
 
     for (var i = 0; i < relay.modeButtons.length; i++) {
@@ -158,7 +182,180 @@
         setMode(relay, e.currentTarget.getAttribute('data-mode'));
       });
     }
+    relay.editBtn.addEventListener('click', function() { openEditor(relay); });
+    el.querySelector('.pt-editor-add').addEventListener('click', function() {
+      if (relay.editorRowsEl.children.length >= MAX_RULES) {
+        showMessage('Relay ' + relay.number + ': at most ' + MAX_RULES + ' rules.', true);
+        return;
+      }
+      addEditorRow(relay, { prayer: 1, offset: 0, on: true });
+    });
+    el.querySelector('.pt-editor-cancel').addEventListener('click', function() {
+      relay.editorEl.hidden = true;
+    });
+    relay.saveBtn.addEventListener('click', function() { saveRules(relay); });
     return relay;
+  }
+
+  // ---- rules ----
+  // Same compact text the firmware publishes as relayN_rules and accepts in set_rules:
+  // "<prayer><+/-offset>:<1 on|0 off>" joined by ';', e.g. "1+10:1;1+20:0".
+
+  function parseRules(text) {
+    if (!text) {
+      return [];
+    }
+    return text.split(';').map(function(part) {
+      var m = /^(\d)([+-]\d+):([01])$/.exec(part);
+      return m ? { prayer: Number(m[1]), offset: Number(m[2]), on: m[3] === '1' } : null;
+    }).filter(function(rule) { return rule !== null; });
+  }
+
+  function formatRules(rules) {
+    return rules.map(function(r) {
+      return r.prayer + (r.offset >= 0 ? '+' : '') + r.offset + ':' + (r.on ? 1 : 0);
+    }).join(';');
+  }
+
+  function describeRule(rule) {
+    var offset = rule.offset === 0 ? 'at ' : (Math.abs(rule.offset) + ' min ' + (rule.offset > 0 ? 'after ' : 'before '));
+    return (rule.on ? 'ON ' : 'OFF ') + offset + PRAYER_NAMES[rule.prayer];
+  }
+
+  function renderRules(relay) {
+    if (relay.rulesText === null) {
+      relay.rulesListEl.textContent = '—';
+      return;
+    }
+    var rules = parseRules(relay.rulesText);
+    relay.rulesListEl.innerHTML = '';
+    if (rules.length === 0) {
+      relay.rulesListEl.textContent = 'No rules';
+      return;
+    }
+    rules.forEach(function(rule) {
+      var line = document.createElement('div');
+      line.className = 'pt-rule ' + (rule.on ? 'is-on' : 'is-off');
+      line.textContent = describeRule(rule);
+      relay.rulesListEl.appendChild(line);
+    });
+  }
+
+  function addEditorRow(relay, rule) {
+    var row = document.createElement('div');
+    row.className = 'pt-editor-row';
+    var prayers = PRAYER_NAMES.map(function(name, i) {
+      return '<option value="' + i + '"' + (i === rule.prayer ? ' selected' : '') + '>' + name + '</option>';
+    }).join('');
+    row.innerHTML =
+      '<select class="pt-ed-state"><option value="1"' + (rule.on ? ' selected' : '') + '>Turn ON</option>' +
+      '<option value="0"' + (rule.on ? '' : ' selected') + '>Turn OFF</option></select>' +
+      '<input class="pt-ed-offset" type="number" min="-1439" max="1439" value="' + rule.offset + '">' +
+      '<select class="pt-ed-prayer">' + prayers + '</select>' +
+      '<button type="button" class="pt-ed-delete" title="Remove">&times;</button>';
+    row.querySelector('.pt-ed-delete').addEventListener('click', function() { row.remove(); });
+    relay.editorRowsEl.appendChild(row);
+  }
+
+  function openEditor(relay) {
+    relay.editorRowsEl.innerHTML = '';
+    parseRules(relay.rulesText).forEach(function(rule) { addEditorRow(relay, rule); });
+    relay.editorEl.hidden = false;
+  }
+
+  function clearPendingRules(relay) {
+    clearTimeout(relay.rulesTimer);
+    relay.pendingRules = null;
+    relay.rulesTimer = null;
+    relay.saveBtn.disabled = false;
+    relay.saveBtn.textContent = 'Save';
+  }
+
+  function saveRules(relay) {
+    var rules = [];
+    var rows = relay.editorRowsEl.querySelectorAll('.pt-editor-row');
+    for (var i = 0; i < rows.length; i++) {
+      var offset = parseInt(rows[i].querySelector('.pt-ed-offset').value, 10);
+      if (isNaN(offset) || offset < -1439 || offset > 1439) {
+        showMessage('Relay ' + relay.number + ': offsets must be whole minutes between -1439 and 1439.', true);
+        return;
+      }
+      rules.push({
+        prayer: Number(rows[i].querySelector('.pt-ed-prayer').value),
+        offset: offset,
+        on: rows[i].querySelector('.pt-ed-state').value === '1'
+      });
+    }
+
+    var text = formatRules(rules);
+    relay.pendingRules = text;
+    relay.saveBtn.disabled = true;
+    relay.saveBtn.textContent = 'Saving…';
+    relay.rulesTimer = setTimeout(function() {
+      clearPendingRules(relay);
+      showMessage('Relay ' + relay.number + ': no confirmation from the board yet.', true);
+    }, PENDING_TIMEOUT_MS);
+
+    sendRpc('set_rules', { relay: relay.number, rules: text }).then(function(reply) {
+      if (reply && reply.success === false) {
+        throw new Error(reply.error || 'rejected by the board');
+      }
+      // Confirmed when the board republishes relayN_rules with the same text.
+    }).catch(function(err) {
+      clearPendingRules(relay);
+      showMessage('Relay ' + relay.number + ': ' + err.message, true);
+    });
+  }
+
+  // ---- events ----
+
+  var events = [];
+
+  function renderEvents() {
+    eventsListEl.innerHTML = '';
+    if (events.length === 0) {
+      eventsListEl.innerHTML = '<div class="pt-events-empty">No events yet.</div>';
+      return;
+    }
+    events.forEach(function(e) {
+      var row = document.createElement('div');
+      row.className = 'pt-event';
+      var time = document.createElement('span');
+      time.className = 'pt-event-time';
+      time.textContent = new Date(e.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      var text = document.createElement('span');
+      text.textContent = e.value;
+      row.appendChild(time);
+      row.appendChild(text);
+      eventsListEl.appendChild(row);
+    });
+  }
+
+  function addEvent(point) {
+    var ts = Number(point.ts);
+    if (events.some(function(e) { return e.ts === ts && e.value === point.value; })) {
+      return;
+    }
+    events.push({ ts: ts, value: point.value });
+    events.sort(function(a, b) { return b.ts - a.ts; });
+    events = events.slice(0, EVENT_COUNT);
+    renderEvents();
+  }
+
+  function loadEventHistory() {
+    var url = TB_HOST + '/api/plugins/telemetry/DEVICE/' + DEVICE_ID + '/values/timeseries' +
+      '?keys=event&startTs=0&endTs=' + Date.now() + '&limit=' + EVENT_COUNT + '&orderBy=DESC';
+    fetch(url, { headers: { 'X-Authorization': 'Bearer ' + token() } }).then(function(r) {
+      if (!r.ok) {
+        throw new Error('HTTP ' + r.status);
+      }
+      return r.json();
+    }).then(function(data) {
+      (data.event || []).forEach(addEvent);
+      renderEvents();
+    }).catch(function(err) {
+      eventsListEl.innerHTML = '<div class="pt-events-empty">Could not load events: ' + err.message + '</div>';
+    });
   }
 
   function renderRelay(relay) {
@@ -241,6 +438,9 @@
     if (ts.current_fw_version) {
       setText('[data-field="current_fw_version"]', ts.current_fw_version.value);
     }
+    if (ts.event) {
+      addEvent(ts.event);
+    }
     relays.forEach(function(relay) {
       var stateKey = 'relay' + relay.number + '_state';
       var modeKey = 'relay' + relay.number + '_mode';
@@ -269,18 +469,36 @@
         value = value + ' dBm';
       } else if (key === 'uptime_s') {
         value = formatUptime(value);
+      } else if (key === 'fw_waiting') {
+        value = value ? ' (update ' + value + ' waiting until relays are idle)' : '';
       }
       setText('[data-attr="' + key + '"]', value);
+    });
+    relays.forEach(function(relay) {
+      var rulesKey = 'relay' + relay.number + '_rules';
+      if (!attrs[rulesKey]) {
+        return;
+      }
+      relay.rulesText = attrs[rulesKey].value || '';
+      if (relay.pendingRules !== null && relay.pendingRules === relay.rulesText) {
+        clearPendingRules(relay);
+        relay.editorEl.hidden = true;
+        showMessage('Relay ' + relay.number + ': rules saved.', false);
+      }
+      renderRules(relay);
     });
   }
 
   function subscriptionKeys() {
-    var keys = [HEARTBEAT_KEY, 'current_fw_version'].concat(STATUS_KEYS);
+    var keys = [HEARTBEAT_KEY, 'current_fw_version', 'event'].concat(STATUS_KEYS);
     for (var i = 1; i <= RELAY_COUNT; i++) {
       keys.push('relay' + i + '_state', 'relay' + i + '_mode');
     }
     var cmdKeys = keys.map(function(k) { return { type: 'TIME_SERIES', key: k }; });
     ATTRIBUTE_KEYS.forEach(function(k) { cmdKeys.push({ type: 'ATTRIBUTE', key: k }); });
+    for (var r = 1; r <= RELAY_COUNT; r++) {
+      cmdKeys.push({ type: 'ATTRIBUTE', key: 'relay' + r + '_rules' });
+    }
     return cmdKeys;
   }
 
@@ -359,6 +577,7 @@
     });
   });
 
+  loadEventHistory();
   connectWs();
 })();
 </script>
