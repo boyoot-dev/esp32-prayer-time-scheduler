@@ -40,6 +40,7 @@
     <span>IP <b data-attr="ip">—</b></span>
     <span>WiFi <b data-attr="rssi">—</b></span>
     <span>Up <b data-attr="uptime_s">—</b></span>
+    <button type="button" class="pt-fw-check">Check for update</button>
     <button type="button" class="pt-reboot">Reboot</button>
   </div>
   <div class="pt-message" hidden></div>
@@ -560,6 +561,22 @@
       ws.close();
     };
   }
+
+  // ---- firmware check ----
+
+  var fwCheckBtn = root.querySelector('.pt-fw-check');
+  fwCheckBtn.addEventListener('click', function() {
+    fwCheckBtn.disabled = true;
+    sendRpc('fw_check', {}).then(function(reply) {
+      // The board replies before the server answers its new request, so "waiting" only
+      // reflects what was known before this check; the footer's fw_waiting follows.
+      showMessage('Running ' + reply.current + (reply.waiting ? '; update ' + reply.waiting + ' is waiting for the relays to be idle.' : '. Asked the server for an assigned update; if one exists it installs once the relays are idle.'), false);
+    }).catch(function(err) {
+      showMessage('Update check: ' + err.message, true);
+    }).then(function() {
+      fwCheckBtn.disabled = false;
+    });
+  });
 
   // ---- reboot ----
 

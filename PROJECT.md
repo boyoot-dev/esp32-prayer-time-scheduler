@@ -74,6 +74,7 @@ RPC:
 |---|---|
 | `set_relay_mode` | `{"relay": 1-4, "mode": "auto"\|"on"\|"off"}` |
 | `set_rules` | `{"relay": 1-4, "rules": "1+10:1;1+20:0"}` |
+| `fw_check` | `{}` |
 | `reboot` | `{}` |
 
 Rules text: `<prayer 0-4><+/-offset>:<1|0>` joined by `;` (fits TbLink's 128-byte publish buffer).

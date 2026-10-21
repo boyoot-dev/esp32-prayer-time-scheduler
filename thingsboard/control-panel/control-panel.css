@@ -295,8 +295,17 @@
 .pt-footer b {
   color: var(--text);
 }
-.pt-reboot {
+.pt-fw-check {
   margin-left: auto;
+  padding: 6px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+.pt-reboot {
   padding: 6px 12px;
   border: 1px solid #fecaca;
   border-radius: 6px;

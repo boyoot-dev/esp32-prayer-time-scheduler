@@ -134,6 +134,17 @@ bool handleRpc(const String &method, JsonVariantConst params, JsonDocument &resp
         return queueCommand(command, response);
     }
 
+    // Re-asks ThingsBoard for the assigned firmware now instead of at the next 30-minute
+    // refresh. Doesn't restart anything; an update found still waits for idle relays.
+    if (method == "fw_check")
+    {
+        tb.refreshSharedAttributes();
+        response["success"] = true;
+        response["current"] = FW_VERSION;
+        response["waiting"] = tb.pendingOtaVersion();
+        return true;
+    }
+
     // Restarting turns every relay OFF for the startup safety delay.
     if (method == "reboot")
     {

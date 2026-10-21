@@ -29,6 +29,7 @@ Add one widget per board.
 |---|---|---|
 | AUTO / ON / OFF | `set_relay_mode` | `{"relay": 1-4, "mode": "auto"\|"on"\|"off"}` |
 | Rules → Save | `set_rules` | `{"relay": 1-4, "rules": "1+10:1;1+20:0"}` |
+| Check for update | `fw_check` | `{}` |
 | Reboot | `reboot` | `{}` |
 
 All are two-way RPCs (`POST /api/plugins/rpc/twoway/{deviceId}`), so errors from the

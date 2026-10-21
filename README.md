@@ -208,6 +208,7 @@ State is published when it changes (checked every 250 ms), in full on every conn
 |---|---|---|
 | `set_relay_mode` | `{"relay": 1-4, "mode": "auto"\|"on"\|"off"}` | Same as the local AUTO/ON/OFF buttons |
 | `set_rules` | `{"relay": 1-4, "rules": "1+10:1;1+20:0"}` | Replaces that relay's rules; `""` clears them |
+| `fw_check` | `{}` | Re-requests the assigned firmware now; replies `current` and `waiting` versions. No restart |
 | `reboot` | `{}` | Restarts the board after 1 s (relays OFF for the startup delay) |
 
 Replies are `{"success": true}` once the command is queued, or `{"success": false, "error": "..."}` for bad parameters. The result shows up in the telemetry and attributes above.
@@ -218,7 +219,7 @@ Replies are `{"success": true}` once the command is queued, or `{"success": fals
 
 1. Bump `FW_VERSION` in [include/firmware_version.h](include/firmware_version.h) and build.
 2. In ThingsBoard → OTA updates, upload `.pio/build/esp32dev/firmware.bin` with title **`prayer-timer`** and the same version string. Both must match byte-for-byte.
-3. Assign the package to the device (or its profile). The board picks it up within 30 minutes, on its next reconnect, or after a `reboot` RPC.
+3. Assign the package to the device (or its profile). The board picks it up within 30 minutes, on its next reconnect, or immediately with **Check for update** on the panel (`fw_check`). No manual reboot is needed.
 4. The board installs it only when **all relays are OFF and no AUTO rule is due within 15 minutes**. Until then, `fw_waiting` shows the version and the widget footer says it is waiting. Installing ends in a restart.
 
 A package with a different title is ignored, so a binary for another board can never be flashed onto this one.
