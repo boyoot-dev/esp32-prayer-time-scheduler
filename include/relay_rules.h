@@ -47,7 +47,7 @@ bool hasAutoRuleWithin(int currentMinsPastMidnight, const int prayerTimes[PRAYER
 
 // Compact text form shared with ThingsBoard: "<prayer><+/-offset>:<1 on|0 off>" joined by
 // ';', e.g. "1+10:1;1+20:0" = ON at Dhuhr+10, OFF at Dhuhr+20 (prayer 0-4 = Fajr..Isha).
-// Short because TbLink publishes each attribute through a 128-byte buffer.
+// Compact so a relay's rules are one short attribute and trivial to parse on the device.
 constexpr size_t RULES_TEXT_MAX = MAX_RULES * 9 + 1;
 void formatRelayRules(int relayIndex, char *out, size_t outSize);
 // Pure parser (touches no shared state), so the network task can validate before queuing.

@@ -106,6 +106,23 @@
     showMessage.timer = setTimeout(function() { messageEl.hidden = true; }, 6000);
   }
 
+  // Disables a button and shows `label` until `promise` settles, so a press visibly
+  // registers and can't be repeated while the board is answering.
+  function whileBusy(btn, label, promise) {
+    var original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = label;
+    return promise.then(function(result) {
+      btn.disabled = false;
+      btn.textContent = original;
+      return result;
+    }, function(err) {
+      btn.disabled = false;
+      btn.textContent = original;
+      throw err;
+    });
+  }
+
   // Two-way RPC: resolves with the board's JSON reply, rejects with a readable message.
   // ThingsBoard answers 504 when the board doesn't reply in time (offline, or busy in a
   // TLS reconnect).
@@ -602,7 +619,7 @@
     if (!confirm('Install ' + firmware.waiting + '? The board restarts once all relays are OFF and no rule is due in 15 minutes; relays stay OFF for about 10 seconds.')) {
       return;
     }
-    sendRpc('fw_install', {}).then(function(reply) {
+    whileBusy(fwInstallBtn, 'Requesting…', sendRpc('fw_install', {})).then(function(reply) {
       if (reply && reply.success === false) {
         throw new Error(reply.error || 'rejected by the board');
       }
@@ -614,15 +631,12 @@
 
   var fwCheckBtn = root.querySelector('.pt-fw-check');
   fwCheckBtn.addEventListener('click', function() {
-    fwCheckBtn.disabled = true;
-    sendRpc('fw_check', {}).then(function(reply) {
+    whileBusy(fwCheckBtn, 'Checking…', sendRpc('fw_check', {})).then(function(reply) {
       // The board replies before the server answers its new request, so "waiting" only
       // reflects what was known before this check; the footer's fw_waiting follows.
       showMessage('Running ' + reply.current + (reply.waiting ? '; update ' + reply.waiting + ' is waiting for the relays to be idle.' : '. Asked the server for an assigned update; if one exists it installs once the relays are idle.'), false);
     }).catch(function(err) {
       showMessage('Update check: ' + err.message, true);
-    }).then(function() {
-      fwCheckBtn.disabled = false;
     });
   });
 
@@ -632,13 +646,10 @@
     if (!confirm('Restart the board? All relays switch OFF for about 10 seconds while it starts.')) {
       return;
     }
-    rebootBtn.disabled = true;
-    sendRpc('reboot', {}).then(function() {
+    whileBusy(rebootBtn, 'Restarting…', sendRpc('reboot', {})).then(function() {
       showMessage('Restarting…', false);
     }).catch(function(err) {
       showMessage('Reboot: ' + err.message, true);
-    }).then(function() {
-      rebootBtn.disabled = false;
     });
   });
 

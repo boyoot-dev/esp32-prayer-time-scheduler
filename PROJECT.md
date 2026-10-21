@@ -20,7 +20,7 @@ lib_deps =
     adafruit/RTClib @ 2.1.4
     knolleary/PubSubClient @ ^2.8
     bblanchon/ArduinoJson @ ^6.21.3
-    https://github.com/boyoot-dev/thingsboard-link.git#2b9748f
+    https://github.com/boyoot-dev/thingsboard-link.git#48270a4
 board_build.filesystem = littlefs
 board_build.partitions = min_spiffs.csv
 ```
@@ -79,7 +79,7 @@ RPC:
 | `set_auto_update` | `{"enabled": bool}` |
 | `reboot` | `{}` |
 
-Rules text: `<prayer 0-4><+/-offset>:<1|0>` joined by `;` (fits TbLink's 128-byte publish buffer).
+Rules text: `<prayer 0-4><+/-offset>:<1|0>` joined by `;`.
 
 Dashboard widget: [thingsboard/control-panel/](thingsboard/control-panel/).
 

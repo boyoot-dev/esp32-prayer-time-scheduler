@@ -38,7 +38,7 @@ portMUX_TYPE rulesMux = portMUX_INITIALIZER_UNLOCKED;
 char reportedRules[RELAY_COUNT][RULES_TEXT_MAX];
 uint32_t rulesVersion = 0;
 
-// {"event":"..."} has to fit TbLink's 128-byte publish buffer.
+// Event-log lines are well under this; longer ones are cut, not dropped.
 constexpr size_t EVENT_TEXT_MAX = 96;
 constexpr int EVENT_BACKLOG = 16;
 struct EventText
@@ -146,8 +146,8 @@ bool handleRpc(const String &method, JsonVariantConst params, JsonDocument &resp
 
     // Re-asks ThingsBoard for the assigned firmware now instead of at the next 30-minute
     // refresh. Doesn't restart anything; an update found still waits for idle relays.
-    // The request is sent after this handler returns: TbLink parses incoming commands in
-    // place in the MQTT buffer, so publishing from here would overwrite this command.
+    // The request is sent from the network loop after this handler returns, keeping
+    // network I/O out of RPC handlers.
     if (method == "fw_check")
     {
         firmwareCheckRequested = true;

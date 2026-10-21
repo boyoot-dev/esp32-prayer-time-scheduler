@@ -42,8 +42,7 @@ so it always shows what the board actually did.
 
 **Rules text** is `<prayer><+/-offset>:<1 on|0 off>` joined by `;`, prayers 0-4 =
 Fajr, Dhuhr, Asr, Maghrib, Isha. `1+10:1;1+20:0` = ON 10 min after Dhuhr, OFF 20 min
-after Dhuhr. Up to 10 rules per relay, offsets -1439..1439. It is this compact because
-TbLink publishes each attribute through a 128-byte buffer. Sending `""` clears a relay's
+after Dhuhr. Up to 10 rules per relay, offsets -1439..1439. Sending `""` clears a relay's
 rules. Reboot asks for confirmation first, because restarting switches
 every relay OFF for the 10 s startup safety delay.
 

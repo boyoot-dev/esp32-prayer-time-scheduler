@@ -168,6 +168,11 @@ void beginNetwork()
     WiFi.setHostname(NETWORK_HOSTNAME);
     WiFi.mode(WIFI_AP_STA);
     WiFi.setSleep(false);
+    // The default fast scan joins the first access point with the network name, which on
+    // a mesh or extender setup can be a distant one (seen: -86 dBm with a -55 dBm node in
+    // range). A full scan lets the driver pick the strongest.
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
     WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t)
                  {
                      if (!mdnsStarted && MDNS.begin(NETWORK_HOSTNAME))

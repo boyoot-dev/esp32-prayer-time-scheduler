@@ -216,7 +216,7 @@ State is published when it changes (checked every 250 ms), in full on every conn
 
 Replies are `{"success": true}` once the command is queued, or `{"success": false, "error": "..."}` for bad parameters. The result shows up in the telemetry and attributes above.
 
-**Rules text** is `<prayer><+/-offset>:<1 on|0 off>` joined by `;`, prayers 0–4 = Fajr..Isha. `1+10:1;1+20:0` = ON 10 min after Dhuhr, OFF 20 min after Dhuhr. It is this compact because TbLink serializes each outgoing attribute into a 128-byte buffer; 10 rules fit in 89 characters.
+**Rules text** is `<prayer><+/-offset>:<1 on|0 off>` joined by `;`, prayers 0–4 = Fajr..Isha. `1+10:1;1+20:0` = ON 10 min after Dhuhr, OFF 20 min after Dhuhr. It is compact so each relay's rules are one short attribute (10 rules fit in 89 characters) and trivial to parse on the device; the panel shows them in words.
 
 ### Firmware updates (OTA)
 
@@ -230,6 +230,8 @@ Auto-update is on by default. Turn it off on the `/network` page's Firmware card
 Verified on the bench (1.1.0 → 1.1.1): a package titled differently was ignored, the correctly titled one was pushed live, downloaded in 16 s, verified and installed with an automatic restart.
 
 A package with a different title is ignored, so a binary for another board can never be flashed onto this one.
+
+The board installs whatever version is assigned whenever it differs from the running one, so **assigning an older version rolls a board back**. It also means a board flashed over USB with a different version than the one assigned to it in ThingsBoard reinstalls the assigned version as soon as it connects. For bench work over USB, unassign the firmware first.
 
 ## Schedule CSV format
 
@@ -395,7 +397,6 @@ Module boundaries are by convention (`include/<name>.h` per `.cpp`); globals lik
 
 - Version `/rules.bin` like `/relay_state.bin`.
 - Basic authentication on the local page, now that it is reachable from the LAN.
-- TbLink: serialize outgoing messages into a buffer sized to the payload instead of 128 bytes, which would allow a readable rules format.
 - Validate CSV minute values (0–1439) at load time.
 - A native PlatformIO test environment for the pure-logic functions above.
 
