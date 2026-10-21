@@ -1,20 +1,29 @@
 #include <LittleFS.h>
 #include <RTClib.h>
 #include <WebServer.h>
-#include <WiFi.h>
 #include <Wire.h>
 #include <esp_task_wdt.h>
 
 #include "app_config.h"
+#include "clock_sync.h"
 #include "event_log.h"
+#include "net.h"
 #include "relay_rules.h"
 #include "schedule_manager.h"
+#include "thingsboard_link.h"
 #include "time_safety.h"
 #include "web_ui.h"
+
+constexpr unsigned long STATE_REPORT_INTERVAL_MS = 250;
+// A firmware update restarts the board (relays OFF for the startup delay); it waits while
+// any relay is ON or an AUTO rule is due within this many minutes.
+constexpr int UPDATE_RULE_MARGIN_MINS = 15;
 
 RTC_DS3231 rtc;
 WebServer server(80);
 bool automationEnabled = false;
+bool rtcSane = false;
+int currentMinute = -1; // minutes past midnight from the last sane RTC reading
 
 bool isEgyptDST(int month, int day)
 {
@@ -66,10 +75,12 @@ void safeStartupDelay()
 
 bool initializeRtc()
 {
-    if (!rtc.begin())
+    bool found = rtc.begin();
+    setRtcPresent(found);
+    if (!found)
     {
-        Serial.println("RTC not found; automation disabled");
-        appendEventLog("RTC not found; automation disabled");
+        Serial.println("RTC not found; automation waits for NTP or browser time");
+        appendEventLog("RTC not found; automation waits for NTP or browser time");
         return false;
     }
 
@@ -94,12 +105,11 @@ bool initializeRtc()
     return true;
 }
 
-void holdRelaysOff(const DateTime &now)
+// Without trusted time or today's schedule: AUTO relays go OFF, manual modes still apply.
+void holdAutoRelaysOff(const DateTime &now)
 {
-    for (int r = 0; r < RELAY_COUNT; r++)
-        setRelayState(r, RELAY_OFF_STATE);
-
-    appendEventLog(now, "Relay outputs held OFF");
+    restoreRelayStatesForNow(0, schedule.prayerMins, now, false);
+    appendEventLog(now, "AUTO relays held OFF");
 }
 void loadScheduleForDate(const DateTime &now, bool restoreRelays)
 {
@@ -118,10 +128,51 @@ void loadScheduleForDate(const DateTime &now, bool restoreRelays)
     else
     {
         appendEventLog(now, "Schedule missing for today; automation disabled");
-        holdRelaysOff(now);
+        holdAutoRelaysOff(now);
     }
 }
 
+void handleRemoteCommand(const RemoteCommand &command)
+{
+    DateTime now = currentTime(rtc);
+    int currentMinsPastMidnight = (now.hour() * 60) + now.minute();
+    bool canUseAutomation = automationEnabled && schedule.loaded && isRtcTimeSane(now);
+
+    switch (command.type)
+    {
+    case REMOTE_SET_RELAY_MODE:
+        changeRelayMode(command.relayIndex, static_cast<RelayMode>(command.mode), currentMinsPastMidnight, schedule.prayerMins, now, canUseAutomation, "ThingsBoard");
+        break;
+    case REMOTE_SET_RELAY_RULES:
+        setRelayRules(command.relayIndex, command.rules, command.ruleCount);
+        saveRulesToStorage();
+        appendEventLog(now, "Relay " + String(command.relayIndex + 1) + " rules saved (ThingsBoard)");
+        restoreRelayStatesForNow(currentMinsPastMidnight, schedule.prayerMins, now, canUseAutomation);
+        reportRelayRules();
+        break;
+    }
+}
+
+void reportCurrentState()
+{
+    DeviceState state = {};
+    bool anyRelayOn = false;
+    for (int r = 0; r < RELAY_COUNT; r++)
+    {
+        state.relayOn[r] = getRelayState(r) == RELAY_ON_STATE;
+        state.relayMode[r] = getRelayMode(r);
+        anyRelayOn = anyRelayOn || state.relayOn[r];
+    }
+    state.rtcOk = rtcSane && !usingNtpFallback();
+    state.scheduleLoaded = schedule.loaded;
+    state.automationEnabled = automationEnabled && schedule.loaded && rtcSane;
+    for (int p = 0; p < PRAYER_COUNT; p++)
+        state.prayerMins[p] = schedule.prayerMins[p];
+
+    bool ruleDueSoon = state.automationEnabled && currentMinute >= 0 && hasAutoRuleWithin(currentMinute, schedule.prayerMins, UPDATE_RULE_MARGIN_MINS);
+    state.safeToRestart = !anyRelayOn && !ruleDueSoon;
+    reportDeviceState(state);
+}
 
 void setup()
 {
@@ -147,17 +198,22 @@ void setup()
 
     loadRelaySettingsFromStorage();
     loadRulesFromStorage();
+    reportRelayRules();
 
     automationEnabled = initializeRtc();
-    DateTime now = rtc.now();
+    DateTime now = currentTime(rtc);
+    rtcSane = automationEnabled;
     if (automationEnabled)
+    {
+        setSystemClockFromRtc(now);
         loadScheduleForDate(now, true);
+    }
     else
-        holdRelaysOff(now);
+    {
+        holdAutoRelaysOff(now);
+    }
 
-    WiFi.softAP(WIFI_SSID, WIFI_PASSWORD);
-    Serial.print("SoftAP IP: ");
-    Serial.println(WiFi.softAPIP());
+    beginNetwork();
     configureWebServer(server, rtc, &automationEnabled);
     server.begin();
     Serial.println("Web server started");
@@ -169,21 +225,50 @@ void loop()
     server.handleClient();
     feedWatchdog();
 
+    RemoteCommand command;
+    while (takeRemoteCommand(command))
+        handleRemoteCommand(command);
+
+    static unsigned long lastReport = 0;
+    if (millis() - lastReport >= STATE_REPORT_INTERVAL_MS)
+    {
+        lastReport = millis();
+        reportCurrentState();
+    }
+
     static unsigned long lastCheck = 0;
     if (millis() - lastCheck < 1000)
         return;
 
     lastCheck = millis();
-    DateTime now = rtc.now();
+    DateTime now = currentTime(rtc);
 
-    static bool loggedInvalidRtc = false;
-    if (!isRtcTimeSane(now))
+    DateTime ntpNow;
+    if (takeNtpSync(ntpNow) && isRtcTimeSane(ntpNow))
     {
-        if (!loggedInvalidRtc)
+        uint32_t rtcSec = now.unixtime();
+        uint32_t ntpSec = ntpNow.unixtime();
+        uint32_t driftSec = rtcSec > ntpSec ? rtcSec - ntpSec : ntpSec - rtcSec;
+        // Also when automation is off: without an RTC the clock never drifts from NTP,
+        // and this is what turns automation on from NTP time.
+        if (driftSec >= 2 || !automationEnabled)
+        {
+            applyClockSync(rtc, automationEnabled, ntpNow, "NTP");
+            now = ntpNow;
+        }
+    }
+
+    rtcSane = isRtcTimeSane(now);
+    currentMinute = rtcSane ? (now.hour() * 60) + now.minute() : -1;
+    static bool loggedInvalidRtc = false;
+    if (!rtcSane)
+    {
+        // Also catches a time sync that re-enabled automation while the RTC is unreadable.
+        if (!loggedInvalidRtc || automationEnabled)
         {
             loggedInvalidRtc = true;
             automationEnabled = false;
-            holdRelaysOff(now);
+            holdAutoRelaysOff(now);
         }
         return;
     }

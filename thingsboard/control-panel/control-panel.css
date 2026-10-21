@@ -1,0 +1,353 @@
+/* ThingsBoard "HTML Card" widget - paste into the widget's CSS tab. */
+
+/* Variables live on the widget root, not :root: ThingsBoard renders the widget in a
+   shadow tree, which :root-scoped custom properties never reach. */
+.pt-panel {
+  --primary: #2563eb;
+  --green: #16a34a;
+  --red: #e11d48;
+  --border: #e5e7eb;
+  --text: #111827;
+  --muted: #6b7280;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 4px;
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Online/offline bar. The unclassed style is the neutral "Checking…" state. */
+.pt-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  background: #f4f5f7;
+  color: var(--muted);
+}
+.pt-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+.pt-status.is-online {
+  background: #f0fdf4;
+  color: #15803d;
+}
+.pt-status.is-online .pt-status-dot {
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+}
+.pt-chips {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.pt-chip {
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #e5e7eb;
+  color: var(--muted);
+}
+.pt-chip.is-ok {
+  background: #dcfce7;
+  color: #15803d;
+}
+.pt-chip.is-bad {
+  background: #fee2e2;
+  color: #be123c;
+}
+
+.pt-prayers {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  margin: 12px 0;
+  text-align: center;
+}
+.pt-prayer {
+  padding: 8px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.pt-prayer-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.pt-prayer-time {
+  margin-top: 3px;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.pt-relays {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+.pt-relay {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-left: 4px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+}
+.pt-relay.is-on {
+  border-left-color: var(--green);
+}
+.pt-relay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.pt-relay-name {
+  font-size: 15px;
+  font-weight: 700;
+}
+.pt-relay-state {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  background: #fee2e2;
+  color: #be123c;
+}
+.pt-relay.is-on .pt-relay-state {
+  background: #dcfce7;
+  color: #15803d;
+}
+.pt-modes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.pt-mode {
+  min-height: 34px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.pt-mode:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.pt-mode.is-active[data-mode="auto"] {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.pt-mode.is-active[data-mode="on"] {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+.pt-mode.is-active[data-mode="off"] {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
+.pt-mode.is-pending {
+  opacity: 1;
+  outline: 2px dashed var(--primary);
+  outline-offset: 1px;
+}
+
+.pt-rules {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+.pt-rule {
+  padding: 1px 0;
+  color: var(--text);
+}
+.pt-rule.is-on::before,
+.pt-rule.is-off::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--red);
+}
+.pt-rule.is-on::before {
+  background: var(--green);
+}
+.pt-rules-edit,
+.pt-editor-actions button {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.pt-editor {
+  margin-top: 8px;
+}
+.pt-editor-row {
+  display: grid;
+  grid-template-columns: 1fr 64px 1fr 30px;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.pt-editor-row select,
+.pt-editor-row input {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+.pt-ed-delete {
+  border: 0;
+  border-radius: 6px;
+  background: #fee2e2;
+  color: var(--red);
+  font-size: 16px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.pt-editor-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.pt-editor-actions .pt-editor-save {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+.pt-editor-actions .pt-editor-save:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.pt-events {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.pt-events-title {
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.pt-events-list {
+  max-height: 180px;
+  overflow: auto;
+  font-size: 12px;
+}
+.pt-event {
+  display: flex;
+  gap: 10px;
+  padding: 3px 0;
+  border-top: 1px solid #f1f5f9;
+}
+.pt-event-time {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pt-events-empty {
+  color: var(--muted);
+}
+.pt-fw-waiting {
+  color: #b45309;
+  font-weight: 600;
+}
+
+.pt-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pt-footer b {
+  color: var(--text);
+}
+.pt-auto-update {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+.pt-fw-install {
+  padding: 6px 12px;
+  border: 1px solid var(--green);
+  border-radius: 6px;
+  background: var(--green);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+.pt-fw-check {
+  padding: 6px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+.pt-reboot {
+  padding: 6px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--red);
+  font-weight: 700;
+  cursor: pointer;
+}
+.pt-fw-install:disabled,
+.pt-fw-check:disabled,
+.pt-reboot:disabled {
+  border-color: #e5e7eb;
+  background: #f3f4f6;
+  color: var(--muted);
+  cursor: wait;
+}
+.pt-message {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+.pt-message.is-error {
+  background: #fef2f2;
+  color: #b91c1c;
+}

@@ -1,10 +1,10 @@
 # Prayer Automation Hub
 
-An ESP32-based, standalone relay automation controller that switches pumps or similar loads according to daily prayer-time schedules — no internet, no cloud, no app. It hosts its own WiFi access point and a local web UI for configuration, manual override, and troubleshooting.
+An ESP32 relay controller that switches pumps or similar loads around the five daily prayer times. All scheduling runs on the device, so it keeps working with no internet. When it can reach WiFi it also connects to a self-hosted ThingsBoard server, which works as a remote panel: live status, relay control, rule editing, an event history and firmware updates.
 
 > This README is written for future-you and for AI coding agents picking this project back up. It documents not just *what* the code does, but *why* it's structured this way, so changes can be made safely.
 
-For a more terse, structured technical reference of the same information, see [PROJECT.md](PROJECT.md) (kept in sync manually — if the two disagree, trust the source code, then update whichever doc is stale).
+For a terse reference of the same information, see [PROJECT.md](PROJECT.md). The two are kept in sync by hand; if they disagree, trust the source code and fix whichever doc is stale.
 
 ---
 
@@ -15,15 +15,16 @@ For a more terse, structured technical reference of the same information, see [P
 - [Repository layout](#repository-layout)
 - [Getting started](#getting-started)
 - [Configuration](#configuration)
-- [Using the device](#using-the-device)
+- [Network and time](#network-and-time)
+- [ThingsBoard](#thingsboard)
 - [Schedule CSV format](#schedule-csv-format)
 - [Relay automation rules](#relay-automation-rules)
 - [AUTO / Manual override modes](#auto--manual-override-modes)
-- [Web UI reference (HTTP API)](#web-ui-reference-http-api)
-- [Flash storage layout (LittleFS)](#flash-storage-layout-littlefs)
+- [Local web UI (HTTP API)](#local-web-ui-http-api)
+- [Storage layout](#storage-layout)
 - [Safety design](#safety-design)
-- [Security notes / known limitations](#security-notes--known-limitations)
 - [Firmware architecture](#firmware-architecture)
+- [Security notes / known limitations](#security-notes--known-limitations)
 - [Development notes](#development-notes)
 - [Roadmap / ideas for later](#roadmap--ideas-for-later)
 - [License](#license)
@@ -32,25 +33,22 @@ For a more terse, structured technical reference of the same information, see [P
 
 ## What it does
 
-The device is designed to run unattended, controlling relays (e.g. water pump for ablution/wudu, irrigation, lighting) around the five daily Islamic prayer times (Fajr, Dhuhr, Asr, Maghrib, Isha), which shift by a few minutes every day across the year.
+The device controls relays (e.g. a water pump for wudu, irrigation, lighting) around Fajr, Dhuhr, Asr, Maghrib and Isha, which shift by a few minutes every day.
 
-Instead of hardcoding times or requiring an internet connection for a prayer-time API, the workflow is:
+1. You generate a full-year prayer-time calendar for your location as a CSV and upload it once through the device's local web page.
+2. You define rules per relay, e.g. "turn Relay 3 ON 10 minutes after Dhuhr, OFF 20 minutes after Dhuhr", from the local page or from ThingsBoard.
+3. The ESP32 keeps time with a battery-backed DS3231 RTC (corrected from NTP when online), loads today's row from the CSV each day, and switches relays at the configured offsets.
 
-1. You generate a full-year prayer-time calendar for your location (any source — an Islamic prayer-time site/app/spreadsheet) as a CSV.
-2. You upload that CSV once (or whenever you want) through the device's local web UI.
-3. You define automation rules per relay (e.g. "turn Relay 3 ON 10 minutes after Dhuhr, turn it OFF 20 minutes after Dhuhr").
-4. The ESP32 keeps time via a battery-backed DS3231 RTC, reads today's row from the CSV every day at midnight, and fires relay state changes at the configured offsets — entirely locally, with no WiFi internet required.
-
-It's built to be conservative about safety: relays default OFF, there's a startup delay, a watchdog, RTC sanity checks, and reboot-safe state restoration (see [Safety design](#safety-design)).
+The schedule never depends on the network or the server. ThingsBoard only mirrors state and forwards commands; if it is down, the device carries on.
 
 ## Hardware
 
 | Component | Detail |
 |---|---|
 | MCU | ESP32 Dev Module (generic devkit) |
-| Framework | Arduino, via PlatformIO |
-| RTC | DS3231 (battery-backed), via [Adafruit RTClib](https://github.com/adafruit/RTClib) `2.1.4` |
-| Storage | Internal flash, LittleFS filesystem |
+| Framework | Arduino (Arduino-ESP32 2.0.17), via PlatformIO |
+| RTC | DS3231 (battery-backed) on I²C (SDA 21, SCL 22), via [Adafruit RTClib](https://github.com/adafruit/RTClib) `2.1.4` |
+| Storage | Internal flash: LittleFS for files, NVS for settings |
 | Relay outputs | 4 channels, **active-low** |
 
 ### Default pin map
@@ -62,283 +60,346 @@ It's built to be conservative about safety: relays default OFF, there's a startu
 | Relay 3 | 5 |
 | Relay 4 | 18 |
 
-Active-low means `digitalWrite(pin, LOW)` energizes the relay (ON) and `HIGH` de-energizes it (OFF) — matches common 4-channel relay boards that switch on a LOW signal. Pin numbers and relay count are defined in [include/app_config.h](include/app_config.h) and can be changed there before flashing (all other code reads `RELAY_PINS`/`RELAY_COUNT`, nothing else needs editing for a different pin map).
+Active-low means `digitalWrite(pin, LOW)` energizes the relay (ON). Pins and relay count are in [include/app_config.h](include/app_config.h); all other code reads `RELAY_PINS`/`RELAY_COUNT`.
 
-There's no wiring diagram or photo in this repo yet — if you add one, put it under a `docs/` folder and link it here.
+Without a working DS3231 the firmware falls back to the system clock once NTP (or a browser sync) has set it, so automation still runs on a networked board. The RTC status then reads "Not working - using network time", and `rtc_ok` is `false` in ThingsBoard. Until a time source is available, AUTO relays stay OFF; manual modes always work.
 
 ## Repository layout
 
 ```
 .
-├── platformio.ini          PlatformIO project/board/library config
+├── platformio.ini            Board, libraries (TbLink pinned by commit), partition table
 ├── include/
-│   ├── app_config.h         All tunable constants: pins, timings, WiFi creds, limits
-│   ├── event_log.h
-│   ├── relay_rules.h
-│   ├── schedule_manager.h
-│   ├── time_safety.h
-│   └── web_ui.h
+│   ├── app_config.h           Pins, timings, AP credentials, time zone offset, limits
+│   ├── ca_certs.h             ISRG Root X1, verifies the ThingsBoard MQTT server
+│   ├── firmware_version.h     FW_TITLE / FW_VERSION for OTA
+│   └── *.h                    One header per module below
 ├── src/
-│   ├── main.cpp              Boot sequence + main loop (orchestrator)
-│   ├── relay_rules.cpp       Relay I/O, modes, rules, persistence, AUTO logic
-│   ├── schedule_manager.cpp  Parses /schedule.csv, finds today's row
-│   ├── web_ui.cpp             Entire local web UI (HTML/CSS/JS inlined) + HTTP handlers
-│   ├── event_log.cpp          Append-only capped log in LittleFS
+│   ├── main.cpp               Boot sequence + main loop (core 1): automation, commands, state snapshot
+│   ├── relay_rules.cpp        Relay I/O, modes, rules, persistence, AUTO logic, rules text format
+│   ├── schedule_manager.cpp   Parses /schedule.csv, finds today's row
+│   ├── clock_sync.cpp         RTC <-> system clock, NTP, applying a trusted time
+│   ├── net.cpp                Network task (core 0): AP + WiFi station, link watchdog
+│   ├── network_settings.cpp   WiFi and ThingsBoard settings in NVS
+│   ├── thingsboard_link.cpp   TbLink: telemetry, attributes, RPC, events, OTA gate
+│   ├── web_ui.cpp             Local web UI (inlined HTML/CSS/JS) + HTTP handlers
+│   ├── event_log.cpp          Capped log in LittleFS, also sent to ThingsBoard
 │   └── time_safety.cpp        RTC sanity checks, timestamp formatting
-├── lib/                      Empty — for private PlatformIO libraries (PlatformIO stub README only)
-├── test/                     Empty — PlatformIO Unity test runner slot (PlatformIO stub README only)
-├── .agents/                   Empty (present, currently unused)
-└── PROJECT.md                 Dense technical reference, same subject as this README
+├── thingsboard/control-panel/ ThingsBoard dashboard widget (HTML + CSS + README)
+├── resources/                 Sample schedule CSV and a UI screenshot
+├── PROJECT.md                 Terse technical reference
+└── lib/, test/                PlatformIO scaffold, unused
 ```
 
-There is intentionally no `data/` directory for LittleFS image upload — `/schedule.csv` is not baked into the firmware image; it's written to flash at runtime exclusively via the web UI's upload form. A fresh flash + fresh filesystem has *no* schedule until you upload one.
+`/schedule.csv` is not part of the firmware image. It is uploaded at runtime through the local web page, so a freshly flashed board has no schedule until you upload one.
 
 ## Getting started
 
 ### Prerequisites
 
-- [PlatformIO](https://platformio.org/) — either the VS Code extension or the CLI (`pio`).
-- A USB connection to the ESP32 dev board.
-- A DS3231 RTC module wired to the ESP32's I²C pins (SDA/SCL — default Wire pins for your board), with its coin-cell battery installed so time survives power loss.
-- 4-channel active-low relay board wired to GPIO 2, 4, 5, 18 (or your customized pins).
+- [PlatformIO](https://platformio.org/) (VS Code extension or CLI).
+- A DS3231 module on the ESP32's I²C pins, with its coin cell.
+- A 4-channel active-low relay board on GPIO 2, 4, 5, 18.
+- For remote access: a WiFi network and a device on the ThingsBoard server (`iot.boyoot.dev`).
 
-### Clone
-
-```powershell
-git clone git@github.com:boyoot-dev/esp32-prayer-time-scheduler.git
-cd esp32-prayer-time-scheduler
-```
-
-### Build
+### Build, upload, monitor
 
 ```powershell
 C:\Users\albedair\.platformio\penv\Scripts\pio.exe run
-```
-
-(Or, if `pio` is on your PATH: `pio run`. If PlatformIO is installed somewhere else on a future machine, adjust the path or just use the VS Code PlatformIO extension's build button.)
-
-### Upload firmware
-
-```powershell
 C:\Users\albedair\.platformio\penv\Scripts\pio.exe run --target upload
-```
-
-Uses `upload_port = COM3` / `upload_speed = 115200` from [platformio.ini](platformio.ini) — update `upload_port` if the board enumerates on a different COM port on your machine.
-
-### Serial monitor
-
-```powershell
 C:\Users\albedair\.platformio\penv\Scripts\pio.exe device monitor
 ```
 
-Runs at `monitor_speed = 115200`. Useful for watching boot logs (RTC status, LittleFS mount, WiFi AP IP, etc.) — the same events are also written to the in-flash event log visible in the web UI.
+Upload uses `COM3` at 115200 from [platformio.ini](platformio.ini). The monitor runs at 115200 and shows boot steps, WiFi, NTP and ThingsBoard connection progress.
+
+**Partition table:** the project uses `min_spiffs.csv` (two 1.9 MB firmware slots for OTA, 128 KB for files). A board that was flashed with the old default table loses its LittleFS files (schedule, rules, relay modes, event log) the first time it is flashed with this one over USB, because the file area moves. Re-upload the CSV and re-enter the rules once afterwards. Later updates, by USB or OTA, keep the files.
 
 ### First boot checklist
 
-1. Flash the firmware.
-2. Watch the serial monitor — confirm `LittleFS ready`, RTC status, and `SoftAP IP: 192.168.4.1`.
-3. From a phone/laptop, connect to WiFi SSID `PrayerTimer-Setup` (see [Configuration](#configuration) for the password).
-4. Browse to `http://192.168.4.1`.
-5. The page auto-syncs the ESP32's RTC from your browser's clock on load (see [Browser Time Sync](#web-ui-reference-http-api)) — do this once to get a valid RTC.
-6. Upload a `schedule.csv` covering the current date (see format below).
-7. Add automation rules per relay and click **Save Automation Rules**.
+1. Flash the firmware and watch the serial monitor for `LittleFS ready`, the RTC status and `SoftAP IP: 192.168.4.1`.
+2. Connect a phone or laptop to WiFi `PrayerTimer-Setup` (password in [Configuration](#configuration)) and browse to `http://192.168.4.1`.
+3. The page syncs the RTC from the browser's clock on load. With internet access later, NTP keeps it correct.
+4. Upload a `schedule.csv` covering the current date.
+5. Add rules per relay and click **Save Automation Rules**.
+6. Optional, for remote access: open **Settings** (`/network`), enter your WiFi, then the ThingsBoard device access token. See [ThingsBoard](#thingsboard).
 
 ## Configuration
 
-All tunables live in [include/app_config.h](include/app_config.h):
+Compile-time constants live in [include/app_config.h](include/app_config.h):
 
 ```cpp
-constexpr const char *WIFI_SSID = "PrayerTimer-Setup";
-constexpr const char *WIFI_PASSWORD = "password123";
+constexpr const char *AP_SSID = "PrayerTimer-Setup";
+constexpr const char *AP_PASSWORD = "password123";
+constexpr const char *NETWORK_HOSTNAME = "prayertimer";     // prayertimer.local on the LAN
+constexpr long TIME_UTC_OFFSET_SECONDS = 2 * 3600;          // RTC keeps UTC+2 standard time
 
 constexpr int RELAY_COUNT = 4;
 constexpr int PRAYER_COUNT = 5;
-constexpr int MAX_RULES = 10;          // per relay
-
+constexpr int MAX_RULES = 10;                                // per relay
 constexpr int RELAY_PINS[RELAY_COUNT] = {2, 4, 5, 18};
-constexpr int RELAY_ON_STATE = LOW;
-constexpr int RELAY_OFF_STATE = HIGH;
 
-constexpr unsigned long STARTUP_SAFE_DELAY_MS = 10000;   // 10s relays held OFF after boot
-constexpr int WATCHDOG_TIMEOUT_SECONDS = 15;
+constexpr unsigned long STARTUP_SAFE_DELAY_MS = 10000;       // relays held OFF after boot
+constexpr int WATCHDOG_TIMEOUT_SECONDS = 30;                 // covers a ~7 s TLS handshake
 
 constexpr int RTC_MIN_VALID_YEAR = 2024;
-constexpr int RTC_MAX_VALID_YEAR = 2035;   // RTC readings outside this range are treated as invalid
+constexpr int RTC_MAX_VALID_YEAR = 2035;                     // bump well before 2035
 constexpr int EVENT_LOG_MAX_ENTRIES = 100;
 ```
 
-Any change here requires a re-flash (`pio run --target upload`) — these are `constexpr`, not runtime-configurable from the web UI.
+Runtime settings (WiFi and ThingsBoard) are entered on the `/network` page and stored in NVS; see [Storage layout](#storage-layout). The firmware version for OTA is in [include/firmware_version.h](include/firmware_version.h).
 
-`RTC_MAX_VALID_YEAR = 2035` is a ceiling baked into the firmware, not just documentation — if this device is still running past 2035, the RTC sanity check will start rejecting valid time and disabling automation. Bump this constant well before then.
+## Network and time
 
-## Using the device
+### WiFi
 
-The device serves everything from itself at `http://192.168.4.1` once connected to its access point — no internet, no external DNS, no app required. The single-page web UI shows:
+- The setup AP `PrayerTimer-Setup` (`192.168.4.1`) is **always on**, also while the board is connected to WiFi, so the local page stays reachable on site even if the router changes.
+- With a WiFi network saved, the board joins it as a station. It is then also reachable at its LAN IP and at `http://prayertimer.local`.
+- With no network saved, the board is AP-only and behaves like the original offline design.
+- Station retries run every 15 s, slowing to every 2 minutes while someone is connected to the AP. Each retry scans across channels, which briefly drops AP clients, and that would get in the way of fixing a wrong password.
+- **Dead-link watchdog:** the ESP32 WiFi driver can keep reporting "connected" after the link has died. While ThingsBoard is not connected, the board pings the gateway once a minute; two failed checks in a row force a WiFi rejoin. It never reboots for this, because it drives relays.
 
-- Live clock (client-side ticking, corrected on page load/reload) and today's date
-- RTC status (Sane/Invalid), schedule file status (Synced/Missing), automation status (Enabled/Disabled)
-- Today's 5 prayer times (once a schedule is loaded)
-- CSV upload form
-- Per-relay: current mode badge, ON/OFF badge, AUTO/ON/OFF buttons, and an editable rule table
-- A single "Save Automation Rules" button that saves **all** relays' rule tables at once
-- An event log panel for troubleshooting
+### Time
+
+- The DS3231 keeps **Egypt standard time (UTC+2) all year**. The schedule CSV and the rules use the same time base, so they never shift at DST changes.
+- The ESP32 system clock keeps UTC. At boot it is set from a trusted RTC, so TLS certificate checks work before NTP answers.
+- All code reads the time through `currentTime()` in [src/clock_sync.cpp](src/clock_sync.cpp): the RTC when it reads sane, otherwise the system clock once NTP or a browser sync has set it since boot.
+- When NTP syncs (on WiFi, roughly hourly) and the RTC is off by 2 s or more, or automation is currently off, the RTC is corrected through `applyClockSync()` in [src/clock_sync.cpp](src/clock_sync.cpp). The browser sync on page load uses the same function. A correction reloads today's schedule, re-evaluates automation and restores relay states. It is logged only when automation turns on or off, or the clock jumps by more than 2 minutes.
+- The browser sync converts the visitor's clock to Egypt standard time with a hard-coded DST window (`isEgyptDST()` in the inlined JS in [src/web_ui.cpp](src/web_ui.cpp), and a copy in [src/main.cpp](src/main.cpp) for the compile-time fallback). **This is Egypt-specific.** NTP doesn't need it, because it applies the fixed UTC+2 offset.
+
+## ThingsBoard
+
+The connection uses [TbLink](https://github.com/boyoot-dev/thingsboard-link) (PubSubClient + HTTPClient), pinned by commit in [platformio.ini](platformio.ini). Bump the hash to pick up TbLink changes.
+
+### Setup
+
+1. Create a device in ThingsBoard and copy its **access token**.
+2. On the board's `/network` page, paste the token into the ThingsBoard form and save. The defaults match the server:
+   - MQTT `mqtt.iot.boyoot.dev:8883` with TLS. This is a DNS-only name, because the main domain is behind Cloudflare, which doesn't forward MQTT.
+   - Firmware downloads from `iot.boyoot.dev:80` over **plain HTTP**. HTTPS through the Cloudflare Tunnel hangs the ESP32's TLS handshake. The firmware checksum still arrives over the TLS MQTT channel and is verified before flashing.
+3. Add the dashboard widget from [thingsboard/control-panel/](thingsboard/control-panel/). Its README has the steps.
+
+Changing ThingsBoard settings on a board that is already connected restarts it (TbLink can't switch servers live), which turns every relay OFF for the startup delay. The page warns about this.
+
+### Connection behavior
+
+- TLS uses ISRG Root X1 ([include/ca_certs.h](include/ca_certs.h)). The board doesn't attempt the TLS connect until its clock is valid (from the RTC or NTP); with the clock at 1970 every certificate looks "not yet valid".
+- A handshake verifies a P-384 chain in software: about 5–9 s on good WiFi, up to ~14 s on a weak link, capped at 30 s by TbLink. The first attempt after boot usually ends in `state=-4` (the server's reply arrives after the 3 s wait) and the retry 15 s later succeeds.
+- The board re-requests its firmware assignment every 30 minutes, because ThingsBoard doesn't reliably push a new assignment to a connected device.
+
+### What the board publishes
+
+| Kind | Key | Notes |
+|---|---|---|
+| Telemetry | `relay1_state`…`relay4_state` | `true` = ON |
+| Telemetry | `relay1_mode`…`relay4_mode` | `auto` / `on` / `off` |
+| Telemetry | `rtc_ok`, `schedule_loaded`, `automation_enabled` | |
+| Telemetry | `event` | Each event-log entry; up to 16 are held while offline |
+| Telemetry | `heartbeat` | Every 8 s, from TbLink; the widget's Online/Offline uses it |
+| Telemetry | `current_fw_title`, `current_fw_version` | On each connect, from TbLink |
+| Attribute | `fajr`, `dhuhr`, `asr`, `maghrib`, `isha` | Today's times, `HH:MM` |
+| Attribute | `relay1_rules`…`relay4_rules` | Compact rules text, see below |
+| Attribute | `ip`, `rssi`, `uptime_s` | Every 60 s |
+| Attribute | `fw_waiting`, `auto_update` | On connect and whenever they change |
+
+State is published when it changes (checked every 250 ms), in full on every connect, and again every 5 minutes.
+
+### Commands (RPC)
+
+| Method | Params | Effect |
+|---|---|---|
+| `set_relay_mode` | `{"relay": 1-4, "mode": "auto"\|"on"\|"off"}` | Same as the local AUTO/ON/OFF buttons |
+| `set_rules` | `{"relay": 1-4, "rules": "1+10:1;1+20:0"}` | Replaces that relay's rules; `""` clears them |
+| `fw_check` | `{}` | Re-requests the assigned firmware now; replies `current`, `waiting`, `auto_update`. No restart |
+| `fw_install` | `{}` | Lets a waiting update install with auto-update off (still only on idle relays) |
+| `set_auto_update` | `{"enabled": true\|false}` | Turns automatic installs on/off (saved in NVS) |
+| `reboot` | `{}` | Restarts the board after 1 s (relays OFF for the startup delay) |
+
+Replies are `{"success": true}` once the command is queued, or `{"success": false, "error": "..."}` for bad parameters. The result shows up in the telemetry and attributes above.
+
+**Rules text** is `<prayer><+/-offset>:<1 on|0 off>` joined by `;`, prayers 0–4 = Fajr..Isha. `1+10:1;1+20:0` = ON 10 min after Dhuhr, OFF 20 min after Dhuhr. It is compact so each relay's rules are one short attribute (10 rules fit in 89 characters) and trivial to parse on the device; the panel shows them in words.
+
+### Firmware updates (OTA)
+
+1. Bump `FW_VERSION` in [include/firmware_version.h](include/firmware_version.h) and build.
+2. In ThingsBoard → OTA updates, upload `.pio/build/esp32dev/firmware.bin` with title **`prayer-timer`** and the same version string. Both must match byte-for-byte.
+3. Assign the package to the device (or its profile). ThingsBoard usually pushes the assignment to the connected board immediately; as a fallback the board re-asks every 30 minutes and on every reconnect. **Check for update** (panel or local `/network` page) re-asks at once.
+4. The board installs it only when **all relays are OFF and no AUTO rule is due within 15 minutes**, and, if **auto-update** is off, only after someone presses **Install** (panel, local page, or `fw_install`). Until then, `fw_waiting` shows the version. Installing downloads (~16 s), verifies the SHA256 checksum and **restarts by itself**; no manual reboot is needed.
+
+Auto-update is on by default. Turn it off on the `/network` page's Firmware card or with the panel's Auto-update switch (`set_auto_update`) to control exactly when a board restarts.
+
+Verified on the bench (1.1.0 → 1.1.1): a package titled differently was ignored, the correctly titled one was pushed live, downloaded in 16 s, verified and installed with an automatic restart.
+
+A package with a different title is ignored, so a binary for another board can never be flashed onto this one.
+
+The board installs whatever version is assigned whenever it differs from the running one, so **assigning an older version rolls a board back**. It also means a board flashed over USB with a different version than the one assigned to it in ThingsBoard reinstalls the assigned version as soon as it connects. For bench work over USB, unassign the firmware first.
 
 ## Schedule CSV format
 
-Uploaded as `/schedule.csv` via the web UI. One row per calendar day, no header row expected. Parsing is in [src/schedule_manager.cpp](src/schedule_manager.cpp):
+Uploaded as `/schedule.csv` from the local page. One row per calendar day, no header. Parsing is in [src/schedule_manager.cpp](src/schedule_manager.cpp):
 
 ```
 month,day,fajr_minutes,dhuhr_minutes,asr_minutes,maghrib_minutes,isha_minutes
 ```
 
-- `month`: 1–12
-- `day`: 1–31
-- All five prayer times are **minutes past midnight** (e.g. `04:35` → `275`), local standard time (see [DST handling](#web-ui-reference-http-api) below).
-
-Example (excerpt):
+All five times are **minutes past midnight** in Egypt standard time, e.g. `04:35` → `275`.
 
 ```csv
 1,1,275,730,930,1040,1180
 1,2,275,730,930,1041,1181
-1,3,276,730,931,1042,1182
 ```
 
-Parsing details worth knowing before you touch this code:
-
-- Lines are matched to today's date by `month`/`day` only — **no year field**. The same file is reused every year; you must re-upload if the calendar's actual prayer-time minutes shift (e.g. from a moon-sighting/authority change) — the code does not interpolate or correct for anything.
-- The parser skips blank lines and any line starting with `-` or containing `Content-` (defensive against stray multipart/form boundary text getting saved if an upload is malformed) — see [src/schedule_manager.cpp:28](src/schedule_manager.cpp#L28).
-- If a line has fewer than 6 commas it's silently skipped as corrupt; there is **no validation** that parsed values are sane minute values (0–1439) at parse time — bad data will just produce a weird schedule, not an error. `formatMinsToTime` will render nonsense but the firmware won't crash.
-- If no row matches today's `month`/`day`, `schedule.loaded` stays `false` and automation is disabled for the day (see [Safety design](#safety-design)).
-- The whole file is scanned linearly on every schedule load (once per boot, once per day-of-month rollover, once per CSV upload, once per browser time-sync). Fine for a ~365-row file on ESP32; would need rework if this ever needs sub-day granularity or multi-year data.
+- Rows are matched by `month`/`day` only, with no year, so the same file is reused every year.
+- Blank lines and lines starting with `-` or containing `Content-` are skipped (defensive against multipart boundary text from a malformed upload). Lines with fewer than 6 commas are skipped silently. Values are not range-checked.
+- No row for today means automation is disabled for the day: AUTO relays are held OFF.
+- The file is scanned linearly on each load (boot, day rollover, upload, time sync). Fine for ~365 rows.
+- The CSV can only be uploaded locally. At about 10 KB it is far too large for TbLink's 512-byte incoming message limit.
 
 ## Relay automation rules
 
-Each of the 4 relays can have up to `MAX_RULES` (10) rules. A rule is:
+Each relay has up to `MAX_RULES` (10) rules:
 
 ```cpp
 struct RelayRule {
-    int prayerIndex;   // 0=Fajr, 1=Dhuhr, 2=Asr, 3=Maghrib, 4=Isha
-    int offsetMins;    // can be negative (before the prayer) or positive (after)
+    int prayerIndex;   // 0=Fajr .. 4=Isha, -1 = empty slot
+    int offsetMins;    // negative = before the prayer
     int targetState;   // RELAY_ON_STATE or RELAY_OFF_STATE
 };
 ```
 
-**Rules are one-shot state-change commands fired at a specific minute, not durations.** If a relay only has an ON rule and no later OFF rule, it stays ON indefinitely once triggered — there is no implicit timeout.
+**Rules are one-shot state changes, not durations.** A relay with only an ON rule stays ON. A 10-minute pump run after Dhuhr needs two rules:
 
-Typical "run pump for 10 minutes after Dhuhr" pattern needs **two** rules on the same relay:
+| Offset | Prayer | Action |
+|---|---|---|
+| `+10` min | Dhuhr | Turn ON |
+| `+20` min | Dhuhr | Turn OFF |
 
-| Rule | Offset | Prayer | Action |
-|---|---|---|---|
-| 1 | `+10` min | Dhuhr | Turn ON |
-| 2 | `+20` min | Dhuhr | Turn OFF |
+Rules can be edited on the local page (all relays saved together) or from ThingsBoard (`set_rules`, one relay per call). Both paths save `/rules.bin`, apply the new rules immediately and republish `relayN_rules`. Whichever side saves last wins.
 
-Rules are edited in the web UI as a per-relay table and all saved together via `POST /` with `save_rules` — see [handleRoot / saveRulesFromRequest in web_ui.cpp](src/web_ui.cpp#L64). The whole `relayRules` array is persisted as a raw binary blob to `/rules.bin` (see [Flash storage layout](#flash-storage-layout-littlefs)).
+Rules take effect in two ways:
 
-Rule matching for continuous automation happens two ways:
-
-1. **Minute-tick firing** — `applyRelayRules()` runs once per changed minute in the main loop and fires any rule whose `prayerTime + offset == currentMinute` exactly, only for relays currently in `AUTO` mode. If the device is off or the loop stalls through that exact minute, the rule is missed *for the tick-based path* — see the next point for why that's still recovered.
-2. **State reconstruction on demand** — `computeAutoRelayStateAtTime()` (used on boot, day rollover, CSV upload, mode switch, and time-sync) scans **all** rules for a relay and picks whichever qualifying rule (`target <= currentMinute`) has the latest `target` minute, i.e. it derives "what state *should* this relay be in right now" from scratch rather than replaying history. This is what makes the reboot-recovery behavior in [Safety design](#safety-design) work, and it's also why a relay can "jump" straight to the correct state immediately after a schedule upload or manual→AUTO mode switch, without waiting for the next exact-minute tick.
+1. **Minute tick:** `applyRelayRules()` runs once per changed minute and fires rules whose `prayerTime + offset` equals the current minute, for AUTO relays only.
+2. **State reconstruction:** `computeAutoRelayStateAtTime()` picks the latest rule at or before the current minute. It runs on boot, day rollover, CSV upload, rule saves, mode switches and time syncs. This is how a reboot at 15:21 still leaves a relay ON whose ON rule fired at 15:20.
 
 ## AUTO / Manual override modes
 
-Each relay independently holds one of three persistent modes (`RelayMode` enum in [include/relay_rules.h](include/relay_rules.h)):
-
 | Mode | Behavior |
 |---|---|
-| `AUTO` (0) | Follows the rule table via the logic above |
-| `MANUAL ON` (1) | Forced ON; automation ignores this relay entirely |
-| `MANUAL OFF` (2) | Forced OFF; automation ignores this relay entirely |
+| `AUTO` | Follows the rules; held OFF when automation is disabled |
+| `MANUAL ON` | Forced ON, always |
+| `MANUAL OFF` | Forced OFF, always |
 
-Set from the web UI (`GET /relay?relay=N&mode=M`) or programmatically via `setRelayMode()`. Mode + last known state are saved to `/relay_state.bin` on every change, so manual overrides survive a reboot/power cycle.
+Manual modes don't depend on the clock, so they apply even without a valid RTC or schedule, and survive reboots (`/relay_state.bin`). Only AUTO relays are held OFF when time or the schedule can't be trusted. Modes can be set from the local page (`/relay`) or ThingsBoard (`set_relay_mode`), both through `changeRelayMode()`. The event log records the source: `(web)` or `(ThingsBoard)`.
 
-## Web UI reference (HTTP API)
+## Local web UI (HTTP API)
 
-All routes are registered in [configureWebServer() in web_ui.cpp](src/web_ui.cpp#L429). There is no authentication on any of these — see [Security notes](#security-notes--known-limitations).
+Routes are registered in `configureWebServer()` in [src/web_ui.cpp](src/web_ui.cpp). None require authentication; see [Security notes](#security-notes--known-limitations).
 
-| Method | Path | Purpose | Params |
-|---|---|---|---|
-| `GET` | `/` | Renders the full HTML page (status, clock, prayer times, upload form, relay cards, event log) | — |
-| `POST` | `/` | Same page render, but if `save_rules` is present in the form body, saves all relay rule tables first | form fields `r{relay}i{index}_p` / `_o` / `_s` per rule row, plus `save_rules` |
-| `GET` | `/relay` | Change a relay's mode (and immediately apply/restore its state) | `relay` (0–3, required), `mode` (0=AUTO/1=MANUAL_ON/2=MANUAL_OFF) or legacy `state` (relay-state value) |
-| `GET` | `/time-sync` | Adjusts the DS3231 RTC to the given time, reloads today's schedule for that date, and re-evaluates automation-enabled status | `y, mo, d, h, mi, s` (all required, range-validated) |
-| `POST` | `/upload` | Multipart file upload; overwrites `/schedule.csv`, then reloads today's row and restores relay states | multipart field `update` |
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/` | Main page: clock, RTC/schedule/automation/WiFi status, prayer times, CSV upload, relay cards with rule tables, event log |
+| `POST` | `/` | With `save_rules`, saves all relays' rules (fields `r{relay}i{index}_p/_o/_s`) |
+| `GET` | `/relay` | `relay` (0–3) + `mode` (0 AUTO, 1 MANUAL ON, 2 MANUAL OFF) |
+| `GET` | `/status` | JSON `{"relays":[{"mode":0-2,"on":bool,"rules":"<rules text>"}]}`; polled by the main page every 3 s |
+| `GET` | `/time-sync` | `y, mo, d, h, mi, s`: set the RTC from the browser (called on every page load) |
+| `POST` | `/upload` | Multipart field `update`: replaces `/schedule.csv` |
+| `GET` | `/network` | Network status (WiFi, AP, NTP, ThingsBoard) and the WiFi + ThingsBoard forms |
+| `POST` | `/network` | Save WiFi settings (`ssid`, `password`, `static`, `ip`, `gateway`, `subnet`, `dns`) and rejoin |
+| `POST` | `/thingsboard` | Save ThingsBoard settings (`token`, `host`, `port`, `tls`, `http_host`, `http_port`, `clear_token`) |
+| `POST` | `/firmware` | `action=save` (with `auto_update`), `check`, or `install` |
 
-Notable behaviors baked into these handlers:
+Password and token fields are never sent back to the browser. Leaving them blank keeps the saved value; for WiFi, only while the network name is unchanged.
 
-- `/` returns HTML with `Cache-Control: no-cache` and streams content in chunks (`sendContent`, `CONTENT_LENGTH_UNKNOWN`) rather than building one big string — keeps ESP32 RAM usage down for a fairly large inlined page.
-- **Browser time sync** happens automatically via JS on every page load (`syncClockFromBrowser()` in the inlined `<script>`, calling `/time-sync`). The browser computes Egypt **standard** time itself (subtracting an hour during the DST window before sending), so the RTC is always kept in UTC+2 standard time regardless of the visiting browser's own DST state. The DST window is hardcoded (`isEgyptDST()`, duplicated in both [src/main.cpp](src/main.cpp#L19) and inline JS in [src/web_ui.cpp](src/web_ui.cpp#L133)): April 24 through October 28 inclusive-ish (see exact boundary logic in code) — **this is Egypt-specific and will silently give wrong results in any other timezone/DST regime.** If you deploy this outside Egypt, both copies of `isEgyptDST()` need to be replaced or generalized.
-- `/time-sync` only logs an event if automation was previously disabled or the time delta from the previous RTC reading exceeds 120 seconds — avoids spamming the event log from routine page-load re-syncs that only correct clock drift.
-- `/relay` and `/time-sync` are plain `GET` requests with no CSRF protection — trivially triggerable by any device that can reach `192.168.4.1`, including via a malicious link if a browser on the AP network visits an attacker-controlled page. Low risk given the AP is closed and local-only, but worth knowing if this design is reused for something more exposed.
+The main page updates relay modes and ON/OFF badges live from `/status`, so changes made from ThingsBoard appear within 3 s. Rules changed elsewhere also refresh live, unless that relay's rule table has unsaved local edits (it no longer matches what the page loaded). In that case the page shows a "reload" notice on that relay instead of discarding the edits. Saving the edited table would still overwrite the newer rules.
 
-## Flash storage layout (LittleFS)
+The page is streamed in chunks (`sendContent`) to keep RAM use low. Arduino's `WebServer` handles one client at a time, so a phone holding an idle connection open can delay other requests by a few seconds.
+
+## Storage layout
+
+### LittleFS (128 KB, `min_spiffs.csv`)
 
 | Path | Written by | Format |
 |---|---|---|
-| `/schedule.csv` | Web UI upload (`POST /upload`) | Plain text CSV, see [above](#schedule-csv-format) |
-| `/rules.bin` | `saveRulesToStorage()` | Raw memory dump of the entire `relayRules[RELAY_COUNT][MAX_RULES]` array — **not versioned**, no magic number. Changing the `RelayRule` struct layout, `RELAY_COUNT`, or `MAX_RULES` will corrupt/misread existing files silently. |
-| `/relay_state.bin` | `saveRelaySettingsToStorage()` | Fixed struct with a magic number (`0x50545231`) and version (`1`) — safely rejects and falls back to defaults (`AUTO`, `OFF`) if the file is missing, wrong size, or the magic/version don't match. See [src/relay_rules.cpp:17](src/relay_rules.cpp#L17). |
-| `/events.log` | `appendEventLog()` | Plain text, one line per event, capped at `EVENT_LOG_MAX_ENTRIES` (100) — oldest entries are dropped once the cap is hit |
+| `/schedule.csv` | `POST /upload` | Plain CSV, see above |
+| `/rules.bin` | `saveRulesToStorage()` | Raw dump of `relayRules[RELAY_COUNT][MAX_RULES]`, **not versioned**. Changing `RelayRule`, `RELAY_COUNT` or `MAX_RULES` misreads existing files silently. |
+| `/relay_state.bin` | `saveRelaySettingsToStorage()` | Modes + last states, with magic `0x50545231` and version `1`; falls back to AUTO/OFF if invalid |
+| `/events.log` | `appendEventLog()` | One line per event, capped at 100 |
 
-If you ever change `RelayRule`'s fields or `MAX_RULES`/`RELAY_COUNT`, either bump `/rules.bin` to a versioned format (mirroring how `/relay_state.bin` already does it) or plan to erase/reformat the filesystem on next flash (`pio run --target erase` or reflashing with a filesystem format), otherwise the firmware will read garbage rules on first boot with new firmware.
+### NVS (Preferences)
+
+| Namespace | Keys |
+|---|---|
+| `network` | `ssid`, `pass`, `static`, `ip`, `gw`, `mask`, `dns` |
+| `thingsboard` | `token`, `host`, `port`, `tls`, `http_host`, `http_port`, `auto_update` |
+
+NVS lives in its own partition and survives both firmware updates and LittleFS reformatting.
 
 ## Safety design
 
-The firmware leans conservative because it's driving relays unattended, often controlling a pump:
+The firmware is conservative because it drives relays unattended, often a pump:
 
-- **Relays are held OFF the instant pins are configured**, before anything else runs (`setupRelayPins()` in `setup()`).
-- **10-second startup delay** (`STARTUP_SAFE_DELAY_MS`) before any relay state is restored, specifically to avoid relay chatter during flaky power recovery (e.g. brownouts causing rapid reboot loops). The watchdog is fed throughout this delay so it doesn't itself trigger a reboot.
-- **Automation is blocked** unless: the RTC is present, hasn't lost power since last set, and reports a year within `[RTC_MIN_VALID_YEAR, RTC_MAX_VALID_YEAR]` — see `isRtcTimeSane()` in [src/time_safety.cpp](src/time_safety.cpp). If any of these fail, all relays are forced OFF and stay OFF until a valid browser time-sync occurs.
-- **Automation is also blocked** if there's no schedule row for today (missing/incomplete CSV) — relays held OFF, not left in whatever state they were in.
-- **Manual override always wins** over automation for that relay.
-- **Reboot-safe AUTO reconstruction**: on boot (and on day rollover, CSV upload, and time-sync), AUTO relays don't wait for the next scheduled tick — `computeAutoRelayStateAtTime()` figures out what state each AUTO relay *should* be in right now, given all its rules and the current time, and applies it immediately. So a reboot at 15:21 with an ON rule at 15:20 still results in the relay being ON.
-- **Hardware watchdog**, 15s timeout, fed at the top and bottom of every `loop()` iteration (and during the startup delay) — a firmware hang longer than 15s triggers an automatic ESP32 reboot.
-- **Capped event log** in flash records boot, RTC state transitions, schedule load/miss, time syncs, CSV uploads, rule saves, mode changes, and every relay ON/OFF transition with its cause — primary tool for diagnosing "why did the pump/relay do that" after the fact, viewable directly in the web UI.
-
-## Security notes / known limitations
-
-This is a closed, local-only device by design (no internet access, no cloud dependency), which is the main mitigating factor for the items below. They're flagged here so nobody mistakes them for oversights if this project is extended or exposed more broadly:
-
-- **Hardcoded WiFi AP credentials.** SSID `PrayerTimer-Setup` / password `password123` are compiled into the firmware ([include/app_config.h](include/app_config.h)) and are the same on every device built from this source, forever, unless changed and reflashed. Anyone with the password (which is now public in this repo's history) can join the AP.
-- **No authentication on the web UI or any HTTP endpoint.** Anyone connected to the AP can view status, change relay modes, upload a new schedule, or resync the clock — there's no login, token, or IP allowlist.
-- **No CSRF protection.** `/relay` and `/time-sync` are simple `GET` requests with no token, so any page loaded by a browser on the AP network could trigger relay changes just by referencing those URLs.
-- **No TLS.** Everything is plain HTTP; irrelevant for confidentiality here since there's nothing sensitive in transit, but worth knowing if this pattern is copied into a project that does carry sensitive data.
-- **Egypt-only DST logic**, duplicated in two places (C++ and inline JS) — see [Web UI reference](#web-ui-reference-http-api). Wrong outside Egypt's DST rules, and the two copies can drift out of sync if only one is edited.
-- **`/rules.bin` has no format versioning** — see [Flash storage layout](#flash-storage-layout-littlefs). A firmware update that changes the rule struct without a matching filesystem wipe will misread saved rules.
-
-None of this matters much for the intended use case (a single trusted household device on a closed AP), but treat all of the above as things to fix first if this is ever bridged onto a shared/home WiFi network, exposed to the internet, or given to less-trusted users.
+- **Relays are OFF the instant pins are configured**, before anything else runs.
+- **10 s startup delay** before any relay state is restored, to avoid chatter during brownout reboot loops. The watchdog is fed throughout.
+- **AUTO needs trusted time and a schedule.** Trusted time is a sane RTC (2024–2035, no lost-power flag), or, if the RTC is missing or unusable, NTP or a browser sync since boot. Without it, or without a CSV row for today, AUTO relays are held OFF.
+- **Manual modes always apply**, independent of the clock.
+- **Reboot-safe reconstruction** of AUTO states (see [rules](#relay-automation-rules)).
+- **Task watchdog**, 30 s, fed in every loop iteration. 30 s rather than the original 15 s covers a TLS handshake.
+- **Firmware updates wait** until all relays are OFF and no AUTO rule is due within 15 minutes.
+- **No network failure touches the relays.** WiFi recovery rejoins instead of rebooting, and ThingsBoard being unreachable changes nothing on the device.
+- **Event log** in flash (and in ThingsBoard) records boot, RTC problems, schedule loads, time syncs, uploads, rule saves, mode changes and every relay transition with its cause.
 
 ## Firmware architecture
 
-Roughly layered as: `main.cpp` orchestrates boot and the main loop, and delegates all actual work to focused modules.
+The work is split across the ESP32's two cores so that network stalls never delay the relays or the local page:
 
-- **[src/main.cpp](src/main.cpp)** — boot sequence (LittleFS mount → relay pins → watchdog → startup delay → load persisted rules/modes → RTC init → load today's schedule → start AP + web server), plus the main `loop()`: feed watchdog, handle web clients, once per second check RTC sanity / day rollover / apply due rules once per changed minute.
-- **[src/relay_rules.cpp](src/relay_rules.cpp)** — everything relay-related: pin setup, active-low normalization, mode storage, rule storage, `computeAutoRelayStateAtTime()` (the core "what should this relay be doing right now" logic), and `applyRelayRules()` (the once-a-minute tick firing).
-- **[src/schedule_manager.cpp](src/schedule_manager.cpp)** — CSV parsing and today's-row lookup, plus `formatMinsToTime()` for display.
-- **[src/web_ui.cpp](src/web_ui.cpp)** — the entire web UI: HTML/CSS/JS is inlined as raw string literals and generated server-side (no separate frontend build step, no external assets, no SPA framework — deliberately simple for an embedded target). Also owns all HTTP route handlers.
-- **[src/event_log.cpp](src/event_log.cpp)** — append + cap + read for `/events.log`.
-- **[src/time_safety.cpp](src/time_safety.cpp)** — RTC sanity check and timestamp formatting shared by the rest of the codebase.
+| Core | Task | Owns |
+|---|---|---|
+| 1 | Arduino `loop()` | All app state: relays, modes, rules, schedule, RTC (I²C), LittleFS, the local web server |
+| 0 | `network` task ([src/net.cpp](src/net.cpp)) | WiFi station management, gateway pings, TbLink (MQTT, TLS handshakes, OTA downloads) |
 
-Module boundaries are enforced only by convention (each `.cpp` has a matching `.h` in `include/`, all included via `#include "name.h"`), not by namespaces — global state like `schedule`, `relayRules`, `relayModes` is shared directly across translation units via `extern` declarations.
+The two sides only exchange data, never call into each other's state:
+
+- **Core 1 → core 0:** every 250 ms the loop reports a `DeviceState` snapshot (relay states/modes, status flags, prayer times, whether a restart is safe) under a spinlock. Rule changes report a formatted rules snapshot, and event-log entries go into a 16-slot queue.
+- **Core 0 → core 1:** `set_relay_mode` and `set_rules` are validated on core 0 and put in a FreeRTOS queue. The loop drains it and applies each command through the same functions the web buttons use.
+- **NTP:** the SNTP callback only sets a flag; the loop task writes the RTC.
+- Only the network task touches the MQTT client. Other code reads a `volatile bool` connected flag, because asking a TLS client whether it's connected from another task blocks during a handshake.
+
+Modules:
+
+- [src/main.cpp](src/main.cpp): boot (LittleFS → relays OFF → watchdog → startup delay → saved modes/rules → RTC → schedule → network + web server) and the loop (web clients, queued commands, state report, once-a-second RTC check, NTP correction, day rollover, minute tick).
+- [src/relay_rules.cpp](src/relay_rules.cpp): relay I/O, modes, rules, persistence, AUTO reconstruction, the rules text format, and the "rule due soon" check for OTA.
+- [src/clock_sync.cpp](src/clock_sync.cpp): `currentTime()` (RTC, or system clock fallback), system clock from RTC, SNTP start and callback, `applyClockSync()`.
+- [src/net.cpp](src/net.cpp) and [src/network_settings.cpp](src/network_settings.cpp): network task, WiFi, link watchdog, settings in NVS.
+- [src/thingsboard_link.cpp](src/thingsboard_link.cpp): TbLink setup, publishing, RPC handling, event forwarding, OTA gate.
+- [src/web_ui.cpp](src/web_ui.cpp), [src/schedule_manager.cpp](src/schedule_manager.cpp), [src/event_log.cpp](src/event_log.cpp), [src/time_safety.cpp](src/time_safety.cpp): as named.
+
+Module boundaries are by convention (`include/<name>.h` per `.cpp`); globals like `schedule`, `relayRules`, `relayModes` are shared via `extern` and must only be touched from core 1.
+
+## Security notes / known limitations
+
+- **The local page is now reachable from the whole LAN** when the board is on WiFi, not just from the AP. It has no authentication, and `/relay` and `/time-sync` are plain `GET`s with no CSRF protection, so any device on the network, or a malicious page opened in a browser on it, can change relay modes or the clock.
+- **Hardcoded AP credentials.** `PrayerTimer-Setup` / `password123` are the same on every board and are in this repo's history.
+- **The ThingsBoard token** is stored unencrypted in NVS. Anyone with USB access to the board can read it.
+- **OTA binaries travel over plain HTTP.** Integrity is protected by the checksum, which arrives over TLS MQTT, but the binary itself isn't confidential.
+- **Egypt-only DST logic** in the browser sync, duplicated in C++ and JS.
+- **`/rules.bin` is unversioned** (see [Storage layout](#storage-layout)).
+- **First connect after boot:** a few local page requests can take 3–8 s during the first ThingsBoard connect. The loop on core 1 was measured not to stall; the delay is in the network stack while the board is new on WiFi. It doesn't affect relay timing.
 
 ## Development notes
 
-- **No unit tests currently exist** (`test/` only has PlatformIO's stub README). Given the hardware dependencies (RTC, GPIO, flash), tests would likely need to target the pure-logic pieces that don't touch hardware directly — e.g. `computeAutoRelayStateAtTime()`, `loadTodaySchedule()`'s CSV parsing, `isRtcTimeSane()` — via PlatformIO's native/host test environment rather than on-device.
-- **No CI configured.** Builds/verifies locally only via `pio run`.
-- **`.vscode/`** has PlatformIO-generated `c_cpp_properties.json`, `extensions.json`, `launch.json` for IntelliSense/debugging — regenerate via the PlatformIO extension if they go stale after a library/board change.
-- **`lib/`** and **`.agents/`** exist but are currently empty (PlatformIO scaffold directories / unused).
-- When editing `include/app_config.h` constants (pins, counts, timeouts), remember these are compile-time constants — every change needs a re-flash, and changes to `RELAY_COUNT`/`MAX_RULES` also invalidate the existing unversioned `/rules.bin` on already-deployed devices (see [Flash storage layout](#flash-storage-layout-littlefs)).
-- If you add a wiring diagram, hardware photos, or a real prayer-time CSV generation script/source, this README references good places for them (`docs/`, and a `Schedule CSV format` cross-link) — update those sections instead of leaving new undocumented files.
+- **No unit tests** (`test/` holds PlatformIO's stub). Good host-test candidates: `computeAutoRelayStateAtTime()`, `parseRelayRules()`/`formatRelayRules()`, `hasAutoRuleWithin()`, CSV parsing, `isRtcTimeSane()`. There is no host C++ compiler on the dev machine yet.
+- **No CI.** Build locally with `pio run`.
+- **TbLink:** to work on it alongside this project, set `symlink://../TbLink` in `lib_deps` temporarily, then push TbLink and pin the new commit hash.
+- **Serial capture from scripts:** opening the port with pyserial's defaults resets the board (DTR/RTS). Set both to inactive before opening.
+- **Compile-time constants** (pins, counts, timeouts) need a re-flash; changing `RELAY_COUNT`/`MAX_RULES` also invalidates `/rules.bin`.
+- **The widget** in [thingsboard/control-panel/](thingsboard/control-panel/) must match the keys and RPC names in [src/thingsboard_link.cpp](src/thingsboard_link.cpp). Change both together.
 
 ## Roadmap / ideas for later
 
-Not committed to, just things that stood out while documenting the current design — revisit and prune this list as priorities become clear:
-
-- Version `/rules.bin` the same way `/relay_state.bin` already is, to make future struct changes safe.
-- Make the DST rule configurable (or at least documented as a single source of truth instead of two copies) if this is ever used outside Egypt.
-- Add basic auth or a setup-time-only AP password change flow, if the device is ever expected to run somewhere less trusted than a private household.
-- Consider validating parsed CSV minute values (0–1439) at load time instead of silently accepting out-of-range numbers.
-- Add a native/host PlatformIO test environment for the pure-logic functions listed under [Development notes](#development-notes).
+- Version `/rules.bin` like `/relay_state.bin`.
+- Basic authentication on the local page, now that it is reachable from the LAN.
+- Validate CSV minute values (0–1439) at load time.
+- A native PlatformIO test environment for the pure-logic functions above.
 
 ## License
 
-No license file is currently included in this repository, which means it defaults to standard copyright — all rights reserved, and others aren't legally permitted to reuse, modify, or redistribute this code even though it's on GitHub. Add a `LICENSE` file (e.g. MIT) if you want to permit reuse.
+No license file is included, so the code defaults to "all rights reserved". Add a `LICENSE` file (e.g. MIT) to permit reuse.

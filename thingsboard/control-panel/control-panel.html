@@ -1,0 +1,659 @@
+<!--
+  ThingsBoard "HTML Card" widget (static type) - paste this whole file into the widget's
+  HTML tab and control-panel.css into the CSS tab, then set DEVICE_ID below (and the
+  matching data-device-id attribute) to the Prayer Timer device's id. One widget per
+  board. See README.md for setup and the design notes.
+
+  Live values come over ThingsBoard's WebSocket API (/api/ws, ENTITY_DATA + latestCmd),
+  the same protocol esp32-mqtt-generic-board's board-overview widget verified against
+  ThingsBoard 4.2.1.1 CE. Commands go over the REST two-way RPC endpoint so the board's
+  reply (e.g. an invalid-parameter error) can be shown on the card.
+-->
+<div class="pt-panel" data-device-id="PASTE-DEVICE-ID-HERE">
+  <div class="pt-status">
+    <span class="pt-status-dot"></span>
+    <span class="pt-status-text">Checking…</span>
+    <span class="pt-chips">
+      <span class="pt-chip" data-chip="rtc_ok">RTC</span>
+      <span class="pt-chip" data-chip="schedule_loaded">Schedule</span>
+      <span class="pt-chip" data-chip="automation_enabled">Automation</span>
+    </span>
+  </div>
+
+  <div class="pt-prayers">
+    <div class="pt-prayer"><div class="pt-prayer-name">Fajr</div><div class="pt-prayer-time" data-attr="fajr">--:--</div></div>
+    <div class="pt-prayer"><div class="pt-prayer-name">Dhuhr</div><div class="pt-prayer-time" data-attr="dhuhr">--:--</div></div>
+    <div class="pt-prayer"><div class="pt-prayer-name">Asr</div><div class="pt-prayer-time" data-attr="asr">--:--</div></div>
+    <div class="pt-prayer"><div class="pt-prayer-name">Maghrib</div><div class="pt-prayer-time" data-attr="maghrib">--:--</div></div>
+    <div class="pt-prayer"><div class="pt-prayer-name">Isha</div><div class="pt-prayer-time" data-attr="isha">--:--</div></div>
+  </div>
+
+  <div class="pt-relays"></div>
+
+  <div class="pt-events">
+    <div class="pt-events-title">Recent events</div>
+    <div class="pt-events-list"><div class="pt-events-empty">Loading…</div></div>
+  </div>
+
+  <div class="pt-footer">
+    <span>Firmware <b data-field="current_fw_version">—</b><b class="pt-fw-waiting" data-attr="fw_waiting"></b></span>
+    <span>IP <b data-attr="ip">—</b></span>
+    <span>WiFi <b data-attr="rssi">—</b></span>
+    <span>Up <b data-attr="uptime_s">—</b></span>
+    <label class="pt-auto-update"><input type="checkbox" class="pt-auto-update-box"> Auto-update</label>
+    <button type="button" class="pt-fw-install" hidden>Install now</button>
+    <button type="button" class="pt-fw-check">Check for update</button>
+    <button type="button" class="pt-reboot">Reboot</button>
+  </div>
+  <div class="pt-message" hidden></div>
+</div>
+
+<script>
+(function() {
+  var DEVICE_ID = 'PASTE-DEVICE-ID-HERE';  // must match data-device-id above
+  // self.ctx and document.currentScript are unusable in static HTML Card widgets on
+  // ThingsBoard 4.2 (see esp32-mqtt-generic-board's pin-card README), so every lookup
+  // is scoped through this root element instead.
+  var root = document.querySelector('[data-device-id="' + DEVICE_ID + '"]');
+  if (!root) {
+    console.error('prayer-timer panel: no element with data-device-id=' + DEVICE_ID);
+    return;
+  }
+
+  var TB_HOST = window.location.origin;
+  var RELAY_COUNT = 4;
+  var MODES = [
+    { key: 'auto', label: 'AUTO' },
+    { key: 'on', label: 'ON' },
+    { key: 'off', label: 'OFF' }
+  ];
+  // The firmware publishes "heartbeat" every 8 s. ThingsBoard's own "active" attribute
+  // only goes stale on a ~60 s server schedule, so offline is decided here instead.
+  var HEARTBEAT_KEY = 'heartbeat';
+  var STALE_AFTER_MS = 25000;
+  // A mode change is queued on the board and confirmed by the next relayN_mode
+  // telemetry point; give up waiting after this long.
+  var PENDING_TIMEOUT_MS = 10000;
+  var STATUS_KEYS = ['rtc_ok', 'schedule_loaded', 'automation_enabled'];
+  var ATTRIBUTE_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha', 'ip', 'rssi', 'uptime_s', 'fw_waiting', 'auto_update'];
+  var PRAYER_NAMES = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
+  var MAX_RULES = 10;
+  var EVENT_COUNT = 10;
+
+  var statusEl = root.querySelector('.pt-status');
+  var statusTextEl = root.querySelector('.pt-status-text');
+  var relaysEl = root.querySelector('.pt-relays');
+  var eventsListEl = root.querySelector('.pt-events-list');
+  var messageEl = root.querySelector('.pt-message');
+  var rebootBtn = root.querySelector('.pt-reboot');
+
+  var lastHeartbeatAt = Date.now();
+  var relays = [];
+
+  function token() {
+    return localStorage.getItem('jwt_token') || sessionStorage.getItem('jwt_token') || '';
+  }
+
+  function isTrue(value) {
+    return value === true || value === 'true';
+  }
+
+  function showMessage(text, isError) {
+    messageEl.textContent = text;
+    messageEl.classList.toggle('is-error', !!isError);
+    messageEl.hidden = false;
+    clearTimeout(showMessage.timer);
+    showMessage.timer = setTimeout(function() { messageEl.hidden = true; }, 6000);
+  }
+
+  // Disables a button and shows `label` until `promise` settles, so a press visibly
+  // registers and can't be repeated while the board is answering.
+  function whileBusy(btn, label, promise) {
+    var original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = label;
+    return promise.then(function(result) {
+      btn.disabled = false;
+      btn.textContent = original;
+      return result;
+    }, function(err) {
+      btn.disabled = false;
+      btn.textContent = original;
+      throw err;
+    });
+  }
+
+  // Two-way RPC: resolves with the board's JSON reply, rejects with a readable message.
+  // ThingsBoard answers 504 when the board doesn't reply in time (offline, or busy in a
+  // TLS reconnect).
+  function sendRpc(method, params) {
+    return fetch(TB_HOST + '/api/plugins/rpc/twoway/' + DEVICE_ID, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Authorization': 'Bearer ' + token() },
+      body: JSON.stringify({ method: method, params: params, timeout: 8000 })
+    }).then(function(r) {
+      if (r.status === 504) {
+        throw new Error('the board did not answer (offline or reconnecting)');
+      }
+      if (!r.ok) {
+        throw new Error('HTTP ' + r.status);
+      }
+      return r.text().then(function(body) { return body ? JSON.parse(body) : {}; });
+    });
+  }
+
+  // ---- online / offline ----
+
+  function setOnline(isOnline) {
+    statusEl.classList.toggle('is-online', isOnline);
+    statusEl.classList.toggle('is-offline', !isOnline);
+    statusTextEl.textContent = isOnline ? 'Online' : 'Offline';
+  }
+
+  setInterval(function() {
+    if (Date.now() - lastHeartbeatAt > STALE_AFTER_MS) {
+      setOnline(false);
+    }
+  }, 3000);
+
+  // ---- relay cards ----
+
+  function createRelay(index) {
+    var number = index + 1;
+    var el = document.createElement('div');
+    el.className = 'pt-relay';
+    var buttons = MODES.map(function(m) {
+      return '<button type="button" class="pt-mode" data-mode="' + m.key + '">' + m.label + '</button>';
+    }).join('');
+    el.innerHTML =
+      '<div class="pt-relay-head"><span class="pt-relay-name">Relay ' + number + '</span>' +
+      '<span class="pt-relay-state">—</span></div>' +
+      '<div class="pt-modes">' + buttons + '</div>' +
+      '<div class="pt-rules"><div class="pt-rules-list">—</div>' +
+      '<button type="button" class="pt-rules-edit">Edit rules</button></div>' +
+      '<div class="pt-editor" hidden><div class="pt-editor-rows"></div>' +
+      '<div class="pt-editor-actions">' +
+      '<button type="button" class="pt-editor-add">+ Add rule</button>' +
+      '<button type="button" class="pt-editor-cancel">Cancel</button>' +
+      '<button type="button" class="pt-editor-save">Save</button></div></div>';
+    relaysEl.appendChild(el);
+
+    var relay = {
+      number: number,
+      el: el,
+      stateEl: el.querySelector('.pt-relay-state'),
+      modeButtons: el.querySelectorAll('.pt-mode'),
+      rulesListEl: el.querySelector('.pt-rules-list'),
+      editBtn: el.querySelector('.pt-rules-edit'),
+      editorEl: el.querySelector('.pt-editor'),
+      editorRowsEl: el.querySelector('.pt-editor-rows'),
+      saveBtn: el.querySelector('.pt-editor-save'),
+      on: null,
+      mode: null,
+      pendingMode: null,
+      pendingTimer: null,
+      rulesText: null,
+      pendingRules: null,
+      rulesTimer: null
+    };
+
+    for (var i = 0; i < relay.modeButtons.length; i++) {
+      relay.modeButtons[i].addEventListener('click', function(e) {
+        setMode(relay, e.currentTarget.getAttribute('data-mode'));
+      });
+    }
+    relay.editBtn.addEventListener('click', function() { openEditor(relay); });
+    el.querySelector('.pt-editor-add').addEventListener('click', function() {
+      if (relay.editorRowsEl.children.length >= MAX_RULES) {
+        showMessage('Relay ' + relay.number + ': at most ' + MAX_RULES + ' rules.', true);
+        return;
+      }
+      addEditorRow(relay, { prayer: 1, offset: 0, on: true });
+    });
+    el.querySelector('.pt-editor-cancel').addEventListener('click', function() {
+      relay.editorEl.hidden = true;
+    });
+    relay.saveBtn.addEventListener('click', function() { saveRules(relay); });
+    return relay;
+  }
+
+  // ---- rules ----
+  // Same compact text the firmware publishes as relayN_rules and accepts in set_rules:
+  // "<prayer><+/-offset>:<1 on|0 off>" joined by ';', e.g. "1+10:1;1+20:0".
+
+  function parseRules(text) {
+    if (!text) {
+      return [];
+    }
+    return text.split(';').map(function(part) {
+      var m = /^(\d)([+-]\d+):([01])$/.exec(part);
+      return m ? { prayer: Number(m[1]), offset: Number(m[2]), on: m[3] === '1' } : null;
+    }).filter(function(rule) { return rule !== null; });
+  }
+
+  function formatRules(rules) {
+    return rules.map(function(r) {
+      return r.prayer + (r.offset >= 0 ? '+' : '') + r.offset + ':' + (r.on ? 1 : 0);
+    }).join(';');
+  }
+
+  function describeRule(rule) {
+    var offset = rule.offset === 0 ? 'at ' : (Math.abs(rule.offset) + ' min ' + (rule.offset > 0 ? 'after ' : 'before '));
+    return (rule.on ? 'ON ' : 'OFF ') + offset + PRAYER_NAMES[rule.prayer];
+  }
+
+  function renderRules(relay) {
+    if (relay.rulesText === null) {
+      relay.rulesListEl.textContent = '—';
+      return;
+    }
+    var rules = parseRules(relay.rulesText);
+    relay.rulesListEl.innerHTML = '';
+    if (rules.length === 0) {
+      relay.rulesListEl.textContent = 'No rules';
+      return;
+    }
+    rules.forEach(function(rule) {
+      var line = document.createElement('div');
+      line.className = 'pt-rule ' + (rule.on ? 'is-on' : 'is-off');
+      line.textContent = describeRule(rule);
+      relay.rulesListEl.appendChild(line);
+    });
+  }
+
+  function addEditorRow(relay, rule) {
+    var row = document.createElement('div');
+    row.className = 'pt-editor-row';
+    var prayers = PRAYER_NAMES.map(function(name, i) {
+      return '<option value="' + i + '"' + (i === rule.prayer ? ' selected' : '') + '>' + name + '</option>';
+    }).join('');
+    row.innerHTML =
+      '<select class="pt-ed-state"><option value="1"' + (rule.on ? ' selected' : '') + '>Turn ON</option>' +
+      '<option value="0"' + (rule.on ? '' : ' selected') + '>Turn OFF</option></select>' +
+      '<input class="pt-ed-offset" type="number" min="-1439" max="1439" value="' + rule.offset + '">' +
+      '<select class="pt-ed-prayer">' + prayers + '</select>' +
+      '<button type="button" class="pt-ed-delete" title="Remove">&times;</button>';
+    row.querySelector('.pt-ed-delete').addEventListener('click', function() { row.remove(); });
+    relay.editorRowsEl.appendChild(row);
+  }
+
+  function openEditor(relay) {
+    relay.editorRowsEl.innerHTML = '';
+    parseRules(relay.rulesText).forEach(function(rule) { addEditorRow(relay, rule); });
+    relay.editorEl.hidden = false;
+  }
+
+  function clearPendingRules(relay) {
+    clearTimeout(relay.rulesTimer);
+    relay.pendingRules = null;
+    relay.rulesTimer = null;
+    relay.saveBtn.disabled = false;
+    relay.saveBtn.textContent = 'Save';
+  }
+
+  function saveRules(relay) {
+    var rules = [];
+    var rows = relay.editorRowsEl.querySelectorAll('.pt-editor-row');
+    for (var i = 0; i < rows.length; i++) {
+      var offset = parseInt(rows[i].querySelector('.pt-ed-offset').value, 10);
+      if (isNaN(offset) || offset < -1439 || offset > 1439) {
+        showMessage('Relay ' + relay.number + ': offsets must be whole minutes between -1439 and 1439.', true);
+        return;
+      }
+      rules.push({
+        prayer: Number(rows[i].querySelector('.pt-ed-prayer').value),
+        offset: offset,
+        on: rows[i].querySelector('.pt-ed-state').value === '1'
+      });
+    }
+
+    var text = formatRules(rules);
+    relay.pendingRules = text;
+    relay.saveBtn.disabled = true;
+    relay.saveBtn.textContent = 'Saving…';
+    relay.rulesTimer = setTimeout(function() {
+      clearPendingRules(relay);
+      showMessage('Relay ' + relay.number + ': no confirmation from the board yet.', true);
+    }, PENDING_TIMEOUT_MS);
+
+    sendRpc('set_rules', { relay: relay.number, rules: text }).then(function(reply) {
+      if (reply && reply.success === false) {
+        throw new Error(reply.error || 'rejected by the board');
+      }
+      // Confirmed when the board republishes relayN_rules with the same text.
+    }).catch(function(err) {
+      clearPendingRules(relay);
+      showMessage('Relay ' + relay.number + ': ' + err.message, true);
+    });
+  }
+
+  // ---- events ----
+
+  var events = [];
+
+  function renderEvents() {
+    eventsListEl.innerHTML = '';
+    if (events.length === 0) {
+      eventsListEl.innerHTML = '<div class="pt-events-empty">No events yet.</div>';
+      return;
+    }
+    events.forEach(function(e) {
+      var row = document.createElement('div');
+      row.className = 'pt-event';
+      var time = document.createElement('span');
+      time.className = 'pt-event-time';
+      time.textContent = new Date(e.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      var text = document.createElement('span');
+      text.textContent = e.value;
+      row.appendChild(time);
+      row.appendChild(text);
+      eventsListEl.appendChild(row);
+    });
+  }
+
+  function addEvent(point) {
+    var ts = Number(point.ts);
+    if (events.some(function(e) { return e.ts === ts && e.value === point.value; })) {
+      return;
+    }
+    events.push({ ts: ts, value: point.value });
+    events.sort(function(a, b) { return b.ts - a.ts; });
+    events = events.slice(0, EVENT_COUNT);
+    renderEvents();
+  }
+
+  function loadEventHistory() {
+    var url = TB_HOST + '/api/plugins/telemetry/DEVICE/' + DEVICE_ID + '/values/timeseries' +
+      '?keys=event&startTs=0&endTs=' + Date.now() + '&limit=' + EVENT_COUNT + '&orderBy=DESC';
+    fetch(url, { headers: { 'X-Authorization': 'Bearer ' + token() } }).then(function(r) {
+      if (!r.ok) {
+        throw new Error('HTTP ' + r.status);
+      }
+      return r.json();
+    }).then(function(data) {
+      (data.event || []).forEach(addEvent);
+      renderEvents();
+    }).catch(function(err) {
+      eventsListEl.innerHTML = '<div class="pt-events-empty">Could not load events: ' + err.message + '</div>';
+    });
+  }
+
+  function renderRelay(relay) {
+    relay.el.classList.toggle('is-on', relay.on === true);
+    relay.stateEl.textContent = relay.on === null ? '—' : (relay.on ? 'ON' : 'OFF');
+    for (var i = 0; i < relay.modeButtons.length; i++) {
+      var btn = relay.modeButtons[i];
+      var mode = btn.getAttribute('data-mode');
+      btn.classList.toggle('is-active', mode === relay.mode);
+      btn.classList.toggle('is-pending', mode === relay.pendingMode);
+      btn.disabled = relay.pendingMode !== null;
+    }
+  }
+
+  function clearPending(relay) {
+    clearTimeout(relay.pendingTimer);
+    relay.pendingMode = null;
+    relay.pendingTimer = null;
+  }
+
+  function setMode(relay, mode) {
+    if (mode === relay.mode || relay.pendingMode) {
+      return;
+    }
+    relay.pendingMode = mode;
+    relay.pendingTimer = setTimeout(function() {
+      clearPending(relay);
+      renderRelay(relay);
+      showMessage('Relay ' + relay.number + ': no confirmation from the board yet.', true);
+    }, PENDING_TIMEOUT_MS);
+    renderRelay(relay);
+
+    sendRpc('set_relay_mode', { relay: relay.number, mode: mode }).then(function(reply) {
+      if (reply && reply.success === false) {
+        throw new Error(reply.error || 'rejected by the board');
+      }
+      // Success means "queued"; the card switches when relayN_mode telemetry arrives.
+    }).catch(function(err) {
+      clearPending(relay);
+      renderRelay(relay);
+      showMessage('Relay ' + relay.number + ': ' + err.message, true);
+    });
+  }
+
+  for (var r = 0; r < RELAY_COUNT; r++) {
+    relays.push(createRelay(r));
+  }
+
+  // ---- live values ----
+
+  function formatUptime(seconds) {
+    var s = Number(seconds) || 0;
+    var d = Math.floor(s / 86400);
+    var h = Math.floor((s % 86400) / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    return d > 0 ? d + 'd ' + h + 'h' : h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+  }
+
+  function setText(selector, text) {
+    var el = root.querySelector(selector);
+    if (el) {
+      el.textContent = text;
+    }
+  }
+
+  function applyTimeSeries(ts) {
+    if (ts[HEARTBEAT_KEY]) {
+      // The point's own timestamp, not receipt time: the first message of a new
+      // subscription is a snapshot of stored values, possibly long stale.
+      lastHeartbeatAt = Number(ts[HEARTBEAT_KEY].ts) || 0;
+      setOnline(Date.now() - lastHeartbeatAt <= STALE_AFTER_MS);
+    }
+    STATUS_KEYS.forEach(function(key) {
+      if (ts[key]) {
+        var chip = root.querySelector('[data-chip="' + key + '"]');
+        chip.classList.toggle('is-ok', isTrue(ts[key].value));
+        chip.classList.toggle('is-bad', !isTrue(ts[key].value));
+      }
+    });
+    if (ts.current_fw_version) {
+      setText('[data-field="current_fw_version"]', ts.current_fw_version.value);
+    }
+    if (ts.event) {
+      addEvent(ts.event);
+    }
+    relays.forEach(function(relay) {
+      var stateKey = 'relay' + relay.number + '_state';
+      var modeKey = 'relay' + relay.number + '_mode';
+      if (ts[stateKey]) {
+        relay.on = isTrue(ts[stateKey].value);
+      }
+      if (ts[modeKey]) {
+        relay.mode = ts[modeKey].value;
+        if (relay.pendingMode === relay.mode) {
+          clearPending(relay);
+        }
+      }
+      if (ts[stateKey] || ts[modeKey]) {
+        renderRelay(relay);
+      }
+    });
+  }
+
+  function applyAttributes(attrs) {
+    ATTRIBUTE_KEYS.forEach(function(key) {
+      if (!attrs[key]) {
+        return;
+      }
+      var value = attrs[key].value;
+      if (key === 'rssi') {
+        value = value + ' dBm';
+      } else if (key === 'uptime_s') {
+        value = formatUptime(value);
+      } else if (key === 'fw_waiting') {
+        firmware.waiting = value || '';
+        renderFirmware();
+        return;
+      } else if (key === 'auto_update') {
+        firmware.autoUpdate = isTrue(value);
+        renderFirmware();
+        return;
+      }
+      setText('[data-attr="' + key + '"]', value);
+    });
+    relays.forEach(function(relay) {
+      var rulesKey = 'relay' + relay.number + '_rules';
+      if (!attrs[rulesKey]) {
+        return;
+      }
+      relay.rulesText = attrs[rulesKey].value || '';
+      if (relay.pendingRules !== null && relay.pendingRules === relay.rulesText) {
+        clearPendingRules(relay);
+        relay.editorEl.hidden = true;
+        showMessage('Relay ' + relay.number + ': rules saved.', false);
+      }
+      renderRules(relay);
+    });
+  }
+
+  function subscriptionKeys() {
+    var keys = [HEARTBEAT_KEY, 'current_fw_version', 'event'].concat(STATUS_KEYS);
+    for (var i = 1; i <= RELAY_COUNT; i++) {
+      keys.push('relay' + i + '_state', 'relay' + i + '_mode');
+    }
+    var cmdKeys = keys.map(function(k) { return { type: 'TIME_SERIES', key: k }; });
+    ATTRIBUTE_KEYS.forEach(function(k) { cmdKeys.push({ type: 'ATTRIBUTE', key: k }); });
+    for (var r = 1; r <= RELAY_COUNT; r++) {
+      cmdKeys.push({ type: 'ATTRIBUTE', key: 'relay' + r + '_rules' });
+    }
+    return cmdKeys;
+  }
+
+  var ws = null;
+  var reconnectTimer = null;
+
+  function connectWs() {
+    ws = new WebSocket(TB_HOST.replace(/^http/, 'ws') + '/api/ws');
+    ws.onopen = function() {
+      ws.send(JSON.stringify({
+        authCmd: { cmdId: 0, token: token() },
+        cmds: [{
+          cmdId: 1,
+          type: 'ENTITY_DATA',
+          query: {
+            entityFilter: { type: 'singleEntity', singleEntity: { entityType: 'DEVICE', id: DEVICE_ID } },
+            pageLink: { pageSize: 1, page: 0 },
+            entityFields: [{ type: 'ENTITY_FIELD', key: 'name' }],
+            latestValues: []  // required even when empty, or the server throws
+          },
+          latestCmd: { keys: subscriptionKeys() }
+        }]
+      }));
+    };
+    ws.onmessage = function(e) {
+      var msg;
+      try {
+        msg = JSON.parse(e.data);
+      } catch (err) {
+        return;
+      }
+      if (msg.errorCode) {
+        console.error('prayer-timer panel WS error', msg.errorMsg);
+        return;
+      }
+      // Initial snapshot arrives under data.data, live pushes under update, with only
+      // the changed keys present.
+      var entities = (msg.data && msg.data.data) || msg.update;
+      var latest = entities && entities[0] && entities[0].latest;
+      if (!latest) {
+        return;
+      }
+      if (latest.TIME_SERIES) {
+        applyTimeSeries(latest.TIME_SERIES);
+      }
+      if (latest.ATTRIBUTE) {
+        applyAttributes(latest.ATTRIBUTE);
+      }
+    };
+    ws.onclose = function() {
+      if (!reconnectTimer) {
+        reconnectTimer = setTimeout(function() {
+          reconnectTimer = null;
+          connectWs();
+        }, 5000);
+      }
+    };
+    ws.onerror = function() {
+      ws.close();
+    };
+  }
+
+  // ---- firmware ----
+
+  var firmware = { waiting: '', autoUpdate: true };
+  var fwInstallBtn = root.querySelector('.pt-fw-install');
+  var autoUpdateBox = root.querySelector('.pt-auto-update-box');
+
+  function renderFirmware() {
+    autoUpdateBox.checked = firmware.autoUpdate;
+    fwInstallBtn.hidden = !firmware.waiting || firmware.autoUpdate;
+    fwInstallBtn.textContent = 'Install ' + firmware.waiting;
+    setText('[data-attr="fw_waiting"]', !firmware.waiting ? '' :
+      firmware.autoUpdate ? ' (update ' + firmware.waiting + ' installs when relays are idle)'
+                          : ' (update ' + firmware.waiting + ' waiting for Install)');
+  }
+
+  autoUpdateBox.addEventListener('change', function() {
+    var enabled = autoUpdateBox.checked;
+    sendRpc('set_auto_update', { enabled: enabled }).then(function(reply) {
+      if (reply && reply.success === false) {
+        throw new Error(reply.error || 'rejected by the board');
+      }
+      showMessage('Automatic updates ' + (enabled ? 'on' : 'off') + '.', false);
+    }).catch(function(err) {
+      autoUpdateBox.checked = !enabled;
+      showMessage('Auto-update: ' + err.message, true);
+    });
+  });
+
+  fwInstallBtn.addEventListener('click', function() {
+    if (!confirm('Install ' + firmware.waiting + '? The board restarts once all relays are OFF and no rule is due in 15 minutes; relays stay OFF for about 10 seconds.')) {
+      return;
+    }
+    whileBusy(fwInstallBtn, 'Requesting…', sendRpc('fw_install', {})).then(function(reply) {
+      if (reply && reply.success === false) {
+        throw new Error(reply.error || 'rejected by the board');
+      }
+      showMessage('Install requested; it starts once the relays are idle.', false);
+    }).catch(function(err) {
+      showMessage('Install: ' + err.message, true);
+    });
+  });
+
+  var fwCheckBtn = root.querySelector('.pt-fw-check');
+  fwCheckBtn.addEventListener('click', function() {
+    whileBusy(fwCheckBtn, 'Checking…', sendRpc('fw_check', {})).then(function(reply) {
+      // The board replies before the server answers its new request, so "waiting" only
+      // reflects what was known before this check; the footer's fw_waiting follows.
+      showMessage('Running ' + reply.current + (reply.waiting ? '; update ' + reply.waiting + ' is waiting for the relays to be idle.' : '. Asked the server for an assigned update; if one exists it installs once the relays are idle.'), false);
+    }).catch(function(err) {
+      showMessage('Update check: ' + err.message, true);
+    });
+  });
+
+  // ---- reboot ----
+
+  rebootBtn.addEventListener('click', function() {
+    if (!confirm('Restart the board? All relays switch OFF for about 10 seconds while it starts.')) {
+      return;
+    }
+    whileBusy(rebootBtn, 'Restarting…', sendRpc('reboot', {})).then(function() {
+      showMessage('Restarting…', false);
+    }).catch(function(err) {
+      showMessage('Reboot: ' + err.message, true);
+    });
+  });
+
+  loadEventHistory();
+  connectWs();
+})();
+</script>

@@ -28,6 +28,8 @@ int getRelayState(int relayIndex);
 const char *relayModeLabel(RelayMode mode);
 RelayMode getRelayMode(int relayIndex);
 void setRelayMode(int relayIndex, RelayMode mode);
+// Sets a relay's mode and applies it now; `source` ("web", "ThingsBoard") goes in the event log.
+void changeRelayMode(int relayIndex, RelayMode mode, int currentMinsPastMidnight, const int prayerTimes[PRAYER_COUNT], const DateTime &now, bool automationEnabled, const char *source);
 void loadRelaySettingsFromStorage();
 void saveRelaySettingsToStorage();
 void applyRelayStateForModeAtTime(int relayIndex, int currentMinsPastMidnight, const int prayerTimes[PRAYER_COUNT], const DateTime &now, bool automationEnabled);
@@ -36,3 +38,17 @@ void clearAllRules();
 void saveRulesToStorage();
 void loadRulesFromStorage();
 void applyRelayRules(int currentMinsPastMidnight, const int prayerTimes[PRAYER_COUNT], const DateTime &now, bool automationEnabled);
+
+// Replaces one relay's rules with the first `count` of `rules` (not saved to flash).
+void setRelayRules(int relayIndex, const RelayRule rules[MAX_RULES], int count);
+
+// True if an AUTO relay has a rule due in the next `windowMins` minutes.
+bool hasAutoRuleWithin(int currentMinsPastMidnight, const int prayerTimes[PRAYER_COUNT], int windowMins);
+
+// Compact text form shared with ThingsBoard: "<prayer><+/-offset>:<1 on|0 off>" joined by
+// ';', e.g. "1+10:1;1+20:0" = ON at Dhuhr+10, OFF at Dhuhr+20 (prayer 0-4 = Fajr..Isha).
+// Compact so a relay's rules are one short attribute and trivial to parse on the device.
+constexpr size_t RULES_TEXT_MAX = MAX_RULES * 9 + 1;
+void formatRelayRules(int relayIndex, char *out, size_t outSize);
+// Pure parser (touches no shared state), so the network task can validate before queuing.
+bool parseRelayRules(const char *text, RelayRule rules[MAX_RULES], int &count);
